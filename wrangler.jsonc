@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "directorai-web",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-09-01",
+  // Workers AI — free text-to-speech for the avatar voice when D-ID isn't used
+  "ai": { "binding": "AI" }
+  // Secrets (set with `npx wrangler pages secret put <NAME> --project-name directorai-web`):
+  //   DID_API_KEY        D-ID API key, used by /api/avatar/*
+  //   ANTHROPIC_API_KEY  Anthropic API key, used by /api/assist
+  //   APP_ACCESS_CODE    Studio access code the app sends with every /api call
+}

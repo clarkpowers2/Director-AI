@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+:root {
+  color-scheme: dark;
+  --navy: #1a2744;
+  --gold: #c9a84c;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: #111a2e;
+  color: #f8f6f1;
+  font-family: Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Script editor: transparent textarea over a highlighted <pre> — both must share metrics */
+.editor-layer {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+input[type="range"] { accent-color: var(--gold); }
+input[type="color"] { -webkit-appearance: none; appearance: none; border: none; padding: 0; background: none; cursor: pointer; }
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: 2px solid rgba(255,255,255,.25); border-radius: 8px; }
+
+.panel { @apply rounded-xl border border-white/10 bg-navy-800/80 p-4; }
+.panel-title { @apply mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gold; }
+.field-label { @apply mb-1 block text-xs font-medium text-white/60; }
+.input { @apply w-full rounded-lg border border-white/15 bg-navy-900 px-3 py-2 text-sm text-light placeholder:text-white/30 focus:border-gold focus:outline-none; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40; }
+.btn-gold { @apply bg-gold text-navy hover:bg-gold-light; }
+.btn-navy { @apply border border-gold/50 bg-navy text-gold hover:bg-navy-600; }
+.btn-ghost { @apply border border-white/15 text-white/80 hover:bg-white/5; }
+.seg { @apply flex rounded-lg border border-white/15 p-0.5; }
+.seg button { @apply flex-1 rounded-md px-2 py-1.5 text-xs font-medium text-white/60 transition; }
+.seg button[aria-pressed="true"] { @apply bg-gold text-navy; }
+.v2-badge { @apply rounded-full border border-white/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/50; }
