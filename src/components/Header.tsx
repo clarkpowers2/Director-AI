@@ -1,4 +1,4 @@
-import { AudioLines, Clapperboard, Download, PackageOpen, Save, Settings, Sparkles, UserRound, Wrench } from "lucide-react";
+import { AudioLines, Clapperboard, Download, PackageOpen, Plus, Save, Settings, Sparkles, UserRound, Wrench } from "lucide-react";
 import type { PageId } from "../lib/command.ts";
 
 export const PAGES: { id: PageId; label: string; icon: React.ReactNode; blurb: string }[] = [
@@ -13,6 +13,8 @@ export const PAGES: { id: PageId; label: string; icon: React.ReactNode; blurb: s
 interface Props {
   page: PageId;
   onPage: (p: PageId) => void;
+  /** Start screen: new project or open another */
+  onNew: () => void;
   name: string;
   setName: (s: string) => void;
   savedAt: number | null;
@@ -52,6 +54,7 @@ export default function Header(p: Props) {
           </div>
         </div>
 
+        <button className="btn btn-ghost" onClick={p.onNew} aria-label="New or open project" title="New or open project"><Plus size={18} /><span className="hidden 2xl:inline">Projects</span></button>
         <button className="btn btn-ghost" onClick={p.onSave} aria-label="Save project"><Save size={18} /><span className="hidden sm:inline">Save</span></button>
         <button className="btn btn-gold hidden sm:inline-flex" onClick={() => p.onPage("export")} aria-label="Go to export"><Download size={18} /> Export</button>
         <button className="btn btn-ghost !px-3" onClick={p.onSettings} aria-label="Settings"><Settings size={18} /></button>

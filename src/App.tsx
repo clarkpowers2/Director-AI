@@ -7,7 +7,8 @@ import AiPrompter, { type PrompterMessage } from "./components/AiPrompter.tsx";
 import VideoPreview from "./components/VideoPreview.tsx";
 import Timeline from "./components/Timeline.tsx";
 import { EmptyState, PageHeader } from "./components/ui.tsx";
-import { applyEdits, buildContext, type CommandEdits, type PageId } from "./lib/command.ts";
+import { applyEdits, buildContext, EXTRA_PAGES, type CommandEdits, type PageId } from "./lib/command.ts";
+import StartScreen from "./components/StartScreen.tsx";
 import SettingsModal from "./components/SettingsModal.tsx";
 import ScriptSection from "./components/ScriptSection.tsx";
 import AvatarStudio from "./components/AvatarStudio.tsx";
@@ -38,7 +39,14 @@ import {
   ClipPreview, ConfirmDialog, GenerationHistory, RenderAvatarPanel, RenderQueue, TestRenderCard, providerLabel,
   type ConfirmRequest, type TestState
 } from "./components/AvatarRender.tsx";
-import { deleteMedia, getClipRecord, getMedia, loadProject, newMediaId, putMedia, saveProject } from "./lib/storage.ts";
+import {
+  deleteMedia, deleteStoredProject, getClipRecord, getMedia, listProjects, loadCurrentProject, newMediaId, openStoredProject, putMedia, saveProject,
+  type ProjectSummary
+} from "./lib/storage.ts";
+import { hydrateProject, newProjectId } from "./lib/project.ts";
+
+/** First visit (nothing saved yet) opens the start screen */
+const initialProject = loadCurrentProject();
 import { createAudio, createVideo, loadImage, thumbnail, videoReady } from "./lib/video.ts";
 import { reduceNoise } from "./lib/audio.ts";
 import type { ExportSources } from "./lib/export.ts";
@@ -76,7 +84,8 @@ function useDebounced<T>(value: T, ms: number): T {
 }
 
 export default function App() {
-  const [project, setProject] = useState<Project>(loadProject);
+  const [project, setProject] = useState<Project>(() => initialProject ?? hydrateProject(null));
+  const [projects, setProjects] = useState<ProjectSummary[]>(listProjects);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [forceParse, setForceParse] = useState(0);
   const [clips, setClips] = useState<Record<string, AvatarClip>>({});
@@ -142,9 +151,12 @@ export default function App() {
   // ---- pages (kept in the URL hash so refresh stays put) ----
   const readHash = (): PageId => {
     const h = window.location.hash.replace(/^#\/?/, "");
-    return (PAGES.some(pg => pg.id === h) ? h : "editor") as PageId;
+    if (PAGES.some(pg => pg.id === h) || EXTRA_PAGES.includes(h as PageId)) return h as PageId;
+    return initialProject ? "editor" : "start";
   };
   const [page, setPage] = useState<PageId>(readHash);
+  const pageRef = useRef(page);
+  pageRef.current = page;
   useEffect(() => {
     const onHash = () => setPage(readHash());
     window.addEventListener("hashchange", onHash);
@@ -191,12 +203,18 @@ export default function App() {
   const projectRef = useRef(project);
   projectRef.current = project;
   const save = useCallback(() => {
-    if (saveProject(projectRef.current)) setSavedAt(Date.now());
+    // don't file the untouched sample project while someone is still choosing how to start
+    const unsaved = !listProjects().some(x => x.id === projectRef.current.id);
+    if (unsaved && (pageRef.current === "start" || pageRef.current === "create")) return;
+    if (saveProject(projectRef.current)) {
+      setSavedAt(Date.now());
+      setProjects(listProjects());
+    }
     else fail("Couldn't save — this browser's storage is full or blocked.");
   }, []);
   useEffect(() => {
     const id = setInterval(save, 30_000);
-    const onHide = () => document.visibilityState === "hidden" && saveProject(projectRef.current);
+    const onHide = () => document.visibilityState === "hidden" && save();
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("beforeunload", onHide);
     return () => {
@@ -328,6 +346,80 @@ export default function App() {
     if (oldId) void deleteMedia(oldId);
     return id;
   };
+
+  /** Validate and store a video in IndexedDB; null (with a notice) if it can't be used */
+  const storeVideoFile = async (file: File, prefix: string): Promise<{ mediaId: string; name: string; duration: number } | null> => {
+    if (!file.type.startsWith("video/") && !/\.(mp4|webm|mov|m4v)$/i.test(file.name)) {
+      fail("That isn't a video file. Use MP4, WebM or MOV.");
+      return null;
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const duration = await videoReady(createVideo(url, true));
+      if (duration > MAX_VIDEO_SECONDS + 1) {
+        fail(`That video is ${Math.round(duration / 60)} minutes long. The limit is 30 minutes — trim it first.`);
+        return null;
+      }
+      const mediaId = newMediaId(prefix);
+      await putMedia(mediaId, file);
+      return { mediaId, name: file.name, duration };
+    } catch {
+      fail("This video format isn't supported by your browser. Try MP4.");
+      return null;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  /** Close the open project (saved) and open another — nothing of the old one is deleted */
+  const switchProject = (next: Project, to: PageId = "editor") => {
+    saveProject(projectRef.current);
+    player.pause();
+    cancelAll();
+    projectRef.current = next;
+    setProject(next);
+    saveProject(next);
+    setProjects(listProjects());
+    setClips({});
+    setRerenders({});
+    setTestState({ status: "idle" });
+    setSelectedId(null);
+    setUndoScript(null);
+    setAiUndo(null);
+    setAiMessages([]);
+    player.seek(0);
+    goPage(to);
+  };
+
+  const blankProject = (startedWith: Project["startedWith"], name: string): Project =>
+    ({ ...hydrateProject(null), id: newProjectId(), name, script: "", startedWith });
+
+  const onNewUpload = async (file: File) => {
+    setBusy("Loading video…");
+    try {
+      const base = await storeVideoFile(file, "base");
+      if (!base) return;
+      const next = blankProject("upload", file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Uploaded video");
+      switchProject({ ...next, base }, "editor");
+      setNotice({ text: "Video added to the Base Video track. Add an avatar, narration, titles or effects.", tone: "info" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteProject = (pr: ProjectSummary) => setConfirmReq({
+    title: "Delete project?", confirmLabel: "Delete project",
+    body: <p>Delete “{pr.name || "Untitled production"}” and its media from this browser? Rendered avatar clips in it are deleted too, so re-creating them would need new renders. This can't be undone.</p>,
+    onConfirm: () => {
+      const old = openStoredProject(pr.id);
+      if (old) {
+        [old.base, old.music, old.cleanedAudio, ...old.broll].forEach(m => m && void deleteMedia(m.mediaId));
+        Object.values(old.avatar.photos).forEach(ph => void deleteMedia(ph.mediaId));
+      }
+      deleteStoredProject(pr.id);
+      setProjects(listProjects());
+    }
+  });
 
   const onBaseFile = async (file: File) => {
     setBusy("Loading video…");
@@ -696,7 +788,7 @@ export default function App() {
   const canGenerate = hasAvatar && spokenScenes.length > 0;
   const staleKeys = () => pendingClipJobs(parse, project.avatar, project.voice, clips, project.targets, true)
     .filter(j => clips[j.key]?.status === "done").map(j => j.key);
-  const current = PAGES.find(pg => pg.id === page)!;
+  const current = PAGES.find(pg => pg.id === page);
 
   const preview = (
     <VideoPreview player={player} media={media} getState={getState} effects={effects}
@@ -710,7 +802,7 @@ export default function App() {
 
   return (
     <div className="min-h-full">
-      <Header page={page} onPage={p => goPage(p)} name={project.name} setName={name => patch(() => ({ name }))}
+      <Header page={page} onPage={p => goPage(p)} onNew={() => goPage("start")} name={project.name} setName={name => patch(() => ({ name }))}
         savedAt={savedAt} onSave={save} onSettings={() => setSettingsOpen(true)} apiOnline={apiOnline} />
 
       <div className="flex">
@@ -745,12 +837,26 @@ export default function App() {
           )}
 
           <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
-            <PageHeader icon={current.icon} title={current.label} subtitle={current.blurb} actions={page === "editor" && avatarScenes.length > 0 ? (
+            {current && <PageHeader icon={current.icon} title={current.label} subtitle={current.blurb} actions={page === "editor" && avatarScenes.length > 0 ? (
               <button className="btn btn-gold" onClick={() => openRender()} disabled={!canGenerate}
                 title={hasAvatar ? `${avatarScenes.length} avatar scene${avatarScenes.length > 1 ? "s" : ""} parsed` : "Pick an avatar on the Avatar page first"}>
                 <Sparkles size={16} /> Render avatar
               </button>
-            ) : undefined} />
+            ) : undefined} />}
+
+            {page === "start" && (
+              <StartScreen projects={projects} currentId={projects.some(x => x.id === project.id) ? project.id : null} busy={busy}
+                onCreateWithAi={() => goPage("create")}
+                onUpload={f => void onNewUpload(f)}
+                onBlank={() => switchProject(blankProject("script", "Untitled production"), "editor")}
+                onOpen={id => {
+                  if (id === project.id) return goPage("editor");
+                  const next = openStoredProject(id);
+                  if (next) switchProject(next, "editor");
+                  else fail("That project couldn't be opened.");
+                }}
+                onDelete={deleteProject} />
+            )}
 
             {page === "editor" && (
               <>

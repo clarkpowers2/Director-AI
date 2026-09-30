@@ -5,26 +5,99 @@
  */
 import { hydrateProject, type Project } from "./project.ts";
 
-const PROJECT_KEY = "directorai:project";
+/** Before multiple projects: the one project lived here. Migrated into the index on first load. */
+const LEGACY_KEY = "directorai:project";
+const INDEX_KEY = "directorai:projects";
+const CURRENT_KEY = "directorai:current";
+const projectKey = (id: string) => `directorai:project:${id}`;
 const DB_NAME = "directorai";
 const STORE = "media";
 
-export function loadProject(): Project {
+export interface ProjectSummary { id: string; name: string; updatedAt: number; startedWith?: Project["startedWith"] }
+
+function readIndex(): ProjectSummary[] {
   try {
-    const raw = localStorage.getItem(PROJECT_KEY);
-    return hydrateProject(raw ? JSON.parse(raw) : null);
+    const list = JSON.parse(localStorage.getItem(INDEX_KEY) ?? "[]") as ProjectSummary[];
+    return Array.isArray(list) ? list : [];
   } catch {
-    return hydrateProject(null);
+    return [];
+  }
+}
+
+function writeIndex(list: ProjectSummary[]): void {
+  try {
+    localStorage.setItem(INDEX_KEY, JSON.stringify(list));
+  } catch {
+    // ignore — the project itself is what matters
+  }
+}
+
+/** Saved projects, most recently edited first */
+export function listProjects(): ProjectSummary[] {
+  migrateLegacy();
+  return readIndex().sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function migrateLegacy(): void {
+  try {
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (!legacy) return;
+    const p = hydrateProject(JSON.parse(legacy));
+    localStorage.setItem(projectKey(p.id), JSON.stringify(p));
+    writeIndex([...readIndex().filter(x => x.id !== p.id), { id: p.id, name: p.name, updatedAt: Date.now(), startedWith: p.startedWith }]);
+    if (!localStorage.getItem(CURRENT_KEY)) localStorage.setItem(CURRENT_KEY, p.id);
+    localStorage.removeItem(LEGACY_KEY);
+  } catch {
+    // leave the legacy copy in place and try again next load
+  }
+}
+
+/** The project to open: the last one used, else null (first visit — show the start screen) */
+export function loadCurrentProject(): Project | null {
+  migrateLegacy();
+  try {
+    const id = localStorage.getItem(CURRENT_KEY);
+    const raw = id ? localStorage.getItem(projectKey(id)) : null;
+    return raw ? hydrateProject(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadProject(): Project {
+  return loadCurrentProject() ?? hydrateProject(null);
+}
+
+export function openStoredProject(id: string): Project | null {
+  try {
+    const raw = localStorage.getItem(projectKey(id));
+    return raw ? hydrateProject(JSON.parse(raw)) : null;
+  } catch {
+    return null;
   }
 }
 
 export function saveProject(p: Project): boolean {
   try {
-    localStorage.setItem(PROJECT_KEY, JSON.stringify(p));
+    localStorage.setItem(projectKey(p.id), JSON.stringify(p));
+    localStorage.setItem(CURRENT_KEY, p.id);
+    writeIndex([...readIndex().filter(x => x.id !== p.id), { id: p.id, name: p.name, updatedAt: Date.now(), startedWith: p.startedWith }]);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Remove a saved project's settings (its media is removed by the caller, which knows the ids) */
+export function deleteStoredProject(id: string): void {
+  try {
+    localStorage.removeItem(projectKey(id));
+    localStorage.removeItem(`directorai:history:${id}`);
+    if (localStorage.getItem(CURRENT_KEY) === id) localStorage.removeItem(CURRENT_KEY);
+  } catch {
+    // ignore
+  }
+  writeIndex(readIndex().filter(x => x.id !== id));
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

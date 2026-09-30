@@ -289,8 +289,10 @@ export interface AvatarRenderSettings {
 
 export interface Project {
   version: 3;
-  /** Stable id for generation history */
+  /** Stable id (project list, generation history) */
   id: string;
+  /** How the project began — shown in the project list */
+  startedWith?: "ai" | "upload" | "script";
   name: string;
   script: string;
   avatarName: string;
@@ -375,7 +377,7 @@ export function defaultProject(): Project {
   };
 }
 
-const newProjectId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+export const newProjectId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** Length of the main timeline: trimmed base video at its speed, or the typed duration */
 export function mainDuration(p: Project): number {
