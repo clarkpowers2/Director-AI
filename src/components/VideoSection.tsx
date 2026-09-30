@@ -1,4 +1,6 @@
 import { useRef } from "react";
+import type { AvatarEditing } from "./VideoPreview.tsx";
+import type { AvatarSegment } from "../lib/avatarLayers.ts";
 import { Crosshair, Film, Scissors, Trash2, Upload } from "lucide-react";
 import { Card, Section, Slider } from "./ui.tsx";
 import VideoPreview, { type Placement } from "./VideoPreview.tsx";
@@ -31,6 +33,8 @@ interface Props {
   onBaseFile: (f: File) => void;
   onRemoveBase: () => void;
   busy: string | null;
+  avatarEditing?: AvatarEditing;
+  avatarSegments?: AvatarSegment[];
 }
 
 export default function VideoSection(p: Props) {
@@ -65,7 +69,7 @@ export default function VideoSection(p: Props) {
             if (f?.type.startsWith("video/")) p.onBaseFile(f);
           }}
         >
-          <VideoPreview player={p.player} media={p.media} getState={p.getState} effects={p.effects}
+          <VideoPreview avatarEditing={p.avatarEditing} player={p.player} media={p.media} getState={p.getState} effects={p.effects}
             hasBase={!!base} onPickBase={() => baseRef.current?.click()}
             showTargets={p.showTargets} selectedId={p.selectedId} placement={p.placement} />
           {p.busy && <p className="mt-2 text-xs text-gold" aria-live="polite">{p.busy}</p>}
@@ -115,7 +119,7 @@ export default function VideoSection(p: Props) {
       </div>
 
       <div className="mt-6">
-        <Timeline player={p.player} timing={p.getState().timing} parse={p.parse} effects={p.effects} project={p.project}
+        <Timeline avatarEditing={p.avatarEditing} avatarSegments={p.avatarSegments} player={p.player} timing={p.getState().timing} parse={p.parse} effects={p.effects} project={p.project}
           clips={p.clips} chapters={p.chapters} selectedId={p.selectedId} onSelect={p.onSelect} />
       </div>
     </Section>

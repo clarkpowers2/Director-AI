@@ -6,7 +6,7 @@ import { EFFECT_DURATION, TARGETED, timedEffects } from "./effects.ts";
 import { formatSeconds } from "./parser.ts";
 import { Player } from "./player.ts";
 import { emptyMedia, renderFrame, videoFrame } from "./render.ts";
-import { sceneClipKey, speechSchedule, SPEED_RATE, targetKey, type RenderState } from "./project.ts";
+import { layoutFor, sceneClipKey, speechSchedule, SPEED_RATE, targetKey, type RenderState } from "./project.ts";
 import { createAudio, createVideo, loadImage, mixClipsToMp3, toMp4, videoReady } from "./video.ts";
 
 export type Resolution = "720p" | "1080p" | "4k";
@@ -151,13 +151,17 @@ export async function exportVideo(
     const url = sources.broll.get(b.id);
     if (url) media.broll.set(b.id, createVideo(url, true));
   }
+  const clipGains = new Map<string, GainNode>();
   const needed = new Set(
     (state.parse?.scenes ?? []).map(s => sceneClipKey(state.project.avatar, state.project.voice, s.spoken)).filter((k): k is string => !!k)
   );
   for (const [key, clip] of Object.entries(state.clips)) {
     if (clip.status !== "done" || !clip.url || !needed.has(key)) continue;
     const el = clip.kind === "audio" ? createAudio(clip.url) : createVideo(clip.url);
-    route(el, voiceBus);
+    const gain = audio.createGain();
+    gain.connect(voiceBus);
+    route(el, gain);
+    clipGains.set(key, gain);
     media.clips.set(key, el);
   }
   if (state.project.avatar.enabled && sources.photo) media.avatarPhoto = await loadImage(sources.photo);
@@ -173,6 +177,7 @@ export async function exportVideo(
   const effects = timedEffects(state.parse, state.project.targets, state.project.effectStyles);
   const player = new Player(() => state, media);
   player.useElementVolume = false;
+  player.clipGains = clipGains;
   player.seek(0);
   await new Promise(r => setTimeout(r, 300)); // let the first frames decode
 
@@ -260,8 +265,10 @@ function primeFrame(v: HTMLVideoElement): Promise<void> {
 export async function exportAudio(state: RenderState, cb: ExportCallbacks): Promise<Blob> {
   cb.onStatus("Mixing avatar audio...");
   const { voice } = state.project;
-  const clips = speechSchedule(state.parse, state.project, state.clips).flatMap(({ clip, start }) =>
-    clip?.status === "done" && clip.blob ? [{ blob: clip.blob, start: state.timing.intro + start }] : []
+  // Muted avatar layers are left out of the voiceover
+  const clips = speechSchedule(state.parse, state.project, state.clips).flatMap(({ clip, start, sceneIndex }) =>
+    clip?.status === "done" && clip.blob && !layoutFor(state.project, state.parse?.scenes[sceneIndex]?.spoken ?? "").muted
+      ? [{ blob: clip.blob, start: state.timing.intro + start }] : []
   );
   if (clips.length === 0) throw new ExportError("Generate the avatar voice first — there's no voiceover audio yet.");
   try {

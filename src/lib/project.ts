@@ -92,8 +92,11 @@ export interface AvatarLayout {
   /** Seconds cut from the start / end of the rendered clip */
   trimStart: number;
   trimEnd: number;
-  /** Seconds moved later (+) or earlier (−) than the script's timestamp */
+  /** Seconds moved later (+) or earlier (−) than the script's timestamp (moves the speech too) */
   shift: number;
+  /** On-screen window on the main timeline, seconds; null = automatic (this line's speech → the next line) */
+  start: number | null;
+  end: number | null;
 }
 
 export const AVATAR_PRESETS: Record<Exclude<AvatarPreset, "custom">, { label: string; x: number; y: number; scale: number }> = {
@@ -107,7 +110,7 @@ export const AVATAR_PRESETS: Record<Exclude<AvatarPreset, "custom">, { label: st
 
 export const DEFAULT_LAYOUT: AvatarLayout = {
   visible: true, preset: "bottom-right", ...{ x: 0.84, y: 0.7, scale: 0.27 },
-  opacity: 1, entrance: "fade", exit: "fade", muted: false, trimStart: 0, trimEnd: 0, shift: 0
+  opacity: 1, entrance: "fade", exit: "fade", muted: false, trimStart: 0, trimEnd: 0, shift: 0, start: null, end: null
 };
 
 /** Layout key for a voiceover line — independent of avatar and voice, so layouts survive a look change */
@@ -304,18 +307,23 @@ export interface SpeechSlot {
   end: number;
 }
 
-let scheduleCache: { parse: ParseResult; clips: Record<string, AvatarClip>; avatar: AvatarSettings; voice: VoiceSettings; slots: SpeechSlot[] } | null = null;
+let scheduleCache: {
+  parse: ParseResult; clips: Record<string, AvatarClip>; avatar: AvatarSettings; voice: VoiceSettings;
+  layouts: Project["avatarLayouts"] | undefined; slots: SpeechSlot[];
+} | null = null;
 
 /**
  * The speaking track. Rendered audio is the authority on length: when a line
  * runs past the next line's timestamp, the next line starts when it ends
  * instead of cutting either one off. The Avatar page flags those lines.
  */
-export function speechSchedule(parse: ParseResult | null, project: Pick<Project, "avatar" | "voice">, clips: Record<string, AvatarClip>): SpeechSlot[] {
+export function speechSchedule(
+  parse: ParseResult | null, project: Pick<Project, "avatar" | "voice"> & Partial<Pick<Project, "avatarLayouts">>, clips: Record<string, AvatarClip>
+): SpeechSlot[] {
   if (!parse) return [];
-  const { avatar, voice } = project;
+  const { avatar, voice, avatarLayouts } = project;
   const c = scheduleCache;
-  if (c && c.parse === parse && c.clips === clips && c.avatar === avatar && c.voice === voice) return c.slots;
+  if (c && c.parse === parse && c.clips === clips && c.avatar === avatar && c.voice === voice && c.layouts === avatarLayouts) return c.slots;
   const rate = SPEED_RATE[voice.speed];
   const slots: SpeechSlot[] = [];
   let prevEnd = -Infinity;
@@ -324,11 +332,13 @@ export function speechSchedule(parse: ParseResult | null, project: Pick<Project,
     const key = sceneClipKey(avatar, voice, scene.spoken);
     const clip = key ? clips[key] : undefined;
     const length = speechDuration(scene, clip, rate);
-    const start = Math.max(scene.start, prevEnd);
+    // A line moved on the avatar track plays at its new time (never before 0)
+    const shift = Number(avatarLayouts?.[lineKey(scene.spoken)]?.shift) || 0;
+    const start = Math.max(scene.start + shift, prevEnd, 0);
     slots.push({ sceneIndex: scene.index, key, clip, scripted: scene.start, start, length, end: start + length });
     prevEnd = start + length;
   }
-  scheduleCache = { parse, clips, avatar, voice, slots };
+  scheduleCache = { parse, clips, avatar, voice, layouts: avatarLayouts, slots };
   return slots;
 }
 

@@ -429,8 +429,9 @@ function PhotoPresenter(p: Props) {
 function PlacementCard(p: Props) {
   const { avatar } = p;
   return (
-    <Card title="Placement" icon={<Video size={16} />} badge={<label className="flex items-center gap-2 text-xs text-white/60">Show avatar <Toggle checked={avatar.enabled} onChange={v => p.setAvatar({ enabled: v })} label="Show avatar" /></label>}>
+    <Card title="Default placement" icon={<Video size={16} />} badge={<label className="flex items-center gap-2 text-xs text-white/60">Show avatar <Toggle checked={avatar.enabled} onChange={v => p.setAvatar({ enabled: v })} label="Show avatar" /></label>}>
       <div className="space-y-3">
+        <p className="text-[11px] text-white/45">Used by avatar lines without their own layout. Place, size, time and hide each scene's avatar in the Editor → Avatar layer.</p>
         <FieldGroup label="Position">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             {POSITIONS.map(pos => (

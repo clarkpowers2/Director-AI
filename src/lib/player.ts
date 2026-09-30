@@ -38,6 +38,8 @@ export class Player {
   media: Media;
   /** Export routes audio through Web Audio gains; the preview uses element volume */
   useElementVolume = true;
+  /** Export only: one gain per avatar clip, so a muted layer is silent in the file too */
+  clipGains: Map<string, GainNode> | null = null;
 
   constructor(getState: () => RenderState, media: Media) {
     this.getState = getState;
@@ -120,7 +122,10 @@ export class Player {
     this.media.clips.forEach((el, key) => {
       if (active && key === active.key) follow(el, active.offset, this.playing, force, rate);
       else stop(el);
-      if (this.useElementVolume) el.volume = video.volumes.voice;
+      const muted = !!active && key === active.key && active.muted;
+      if (this.useElementVolume) el.volume = muted ? 0 : video.volumes.voice;
+      const gain = this.clipGains?.get(key);
+      if (gain) gain.gain.value = muted ? 0 : 1;
     });
 
     // B-roll (muted)

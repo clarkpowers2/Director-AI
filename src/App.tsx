@@ -9,6 +9,9 @@ import Timeline from "./components/Timeline.tsx";
 import { EmptyState, PageHeader } from "./components/ui.tsx";
 import { applyEdits, buildContext, EXTRA_PAGES, type CommandEdits, type PageId } from "./lib/command.ts";
 import StartScreen from "./components/StartScreen.tsx";
+import AvatarLayerPanel from "./components/AvatarLayerPanel.tsx";
+import { avatarSegments, withLayout } from "./lib/avatarLayers.ts";
+import type { AvatarEditing } from "./components/VideoPreview.tsx";
 import { Creator, PlanReview } from "./components/PlanWorkflow.tsx";
 import SettingsModal from "./components/SettingsModal.tsx";
 import ScriptSection from "./components/ScriptSection.tsx";
@@ -26,8 +29,8 @@ import { emptyMedia } from "./lib/render.ts";
 import { buildChapters } from "./lib/chapters.ts";
 import { insertDirection, replaceSpoken } from "./lib/scriptEdit.ts";
 import {
-  MAX_VIDEO_SECONDS, SPEED_RATE, currentPhoto, defaultProject, mainDuration, photoKey, programTiming, sceneClipKey, targetKey,
-  type AvatarClip, type AvatarRenderSettings, type AvatarSettings, type Branding, type BrollClip, type Project, type RenderState, type TargetRect,
+  MAX_VIDEO_SECONDS, SPEED_RATE, currentPhoto, lineKey, defaultProject, mainDuration, photoKey, programTiming, sceneClipKey, targetKey,
+  type AvatarClip, type AvatarLayout, type AvatarRenderSettings, type AvatarSettings, type Branding, type BrollClip, type Project, type RenderState, type TargetRect,
   type VideoSettings, type VoiceSettings
 } from "./lib/project.ts";
 import {
@@ -93,6 +96,8 @@ export default function App() {
   const [clips, setClips] = useState<Record<string, AvatarClip>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [placement, setPlacement] = useState<Placement | null>(null);
+  /** Avatar layer being edited (layout key of its voiceover line) */
+  const [selectedAvatarKey, setSelectedAvatarKey] = useState<string | null>(null);
   const [showTargets, setShowTargets] = useState(false);
   const [server, setServer] = useState<ServerStatus | null>(null);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
@@ -389,6 +394,7 @@ export default function App() {
     setRerenders({});
     setTestState({ status: "idle" });
     setSelectedId(null);
+    setSelectedAvatarKey(null);
     setUndoScript(null);
     setAiUndo(null);
     setAiMessages([]);
@@ -837,13 +843,26 @@ export default function App() {
     .filter(j => clips[j.key]?.status === "done").map(j => j.key);
   const current = PAGES.find(pg => pg.id === page);
 
+  // ---- avatar layers: layout edits only; they never touch the render pipeline ----
+  const avatarSegs = avatarSegments(parse, project, clips, main);
+  const setLayout = (key: string, change: Partial<AvatarLayout>) => patch(p => {
+    const scene = parse.scenes.find(s => s.spoken && lineKey(s.spoken) === key);
+    return scene ? { avatarLayouts: withLayout(p, key, scene.spoken, change) } : {};
+  });
+  const resetLayout = (key: string) => patch(p => {
+    const next = { ...p.avatarLayouts };
+    delete next[key];
+    return { avatarLayouts: next };
+  });
+  const avatarEditing: AvatarEditing = { selectedKey: selectedAvatarKey, select: setSelectedAvatarKey, change: setLayout };
+
   const preview = (
-    <VideoPreview player={player} media={media} getState={getState} effects={effects}
+    <VideoPreview avatarEditing={avatarEditing} player={player} media={media} getState={getState} effects={effects}
       hasBase={!!project.base} onPickBase={() => goPage("editor", "video")}
       showTargets={showTargets} selectedId={selectedId} placement={placement} />
   );
   const timeline = (
-    <Timeline player={player} timing={timing} parse={parse} effects={effects} project={project}
+    <Timeline avatarEditing={avatarEditing} avatarSegments={avatarSegs} player={player} timing={timing} parse={parse} effects={effects} project={project}
       clips={clips} chapters={chapters} selectedId={selectedId} onSelect={selectDirection} />
   );
 
@@ -951,7 +970,9 @@ export default function App() {
                     if (project.cleanedAudio) void deleteMedia(project.cleanedAudio.mediaId);
                     patch(p => ({ base: null, cleanedAudio: null, video: { ...p.video, trimIn: 0, trimOut: null, cleanBaseAudio: false } }));
                   }}
-                  busy={busy} />
+                  busy={busy} avatarEditing={avatarEditing} avatarSegments={avatarSegs} />
+                <AvatarLayerPanel segments={avatarSegs} selectedKey={selectedAvatarKey} format={project.format} mainSeconds={main}
+                  onSelect={setSelectedAvatarKey} onChange={setLayout} onReset={resetLayout} onSeek={m => player.seek(timing.intro + m)} />
               </>
             )}
 

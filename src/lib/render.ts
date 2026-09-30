@@ -9,9 +9,10 @@ import {
 } from "./effects.ts";
 import { ENVELOPE_FPS } from "./audio.ts";
 import {
-  currentPhoto, gestureSupport, speechSchedule, SPEED_RATE,
-  type AvatarClip, type AvatarPosition, type AvatarSize, type RenderState
+  currentPhoto, gestureSupport, layoutFor, speechSchedule, SPEED_RATE,
+  type AvatarClip, type RenderState
 } from "./project.ts";
+import { activeSegment, avatarSegments, layoutBox, motionAt, type AvatarSegment, type Motion } from "./avatarLayers.ts";
 
 export interface Media {
   base: HTMLVideoElement | null;
@@ -29,6 +30,12 @@ export interface Media {
 export const emptyMedia = (): Media => ({
   base: null, baseAudio: null, music: null, clips: new Map(), broll: new Map(), avatarPhoto: null, logo: null
 });
+
+/** What the frame drew, for hit-testing in the editor */
+export interface FrameInfo {
+  /** The avatar layer on screen: its layout key and pixel box (before entrance/exit motion) */
+  avatar: { key: string; box: Rect; full: boolean } | null;
+}
 
 export interface FrameOptions {
   /** Target-editing mode: no zoom, dashed boxes around targeted effects */
@@ -75,33 +82,6 @@ export function videoFrame(v: HTMLVideoElement): HTMLCanvasElement | null {
   return snap ?? null;
 }
 
-/** Avatar width as a share of the screen: 25% / 33% / 50% */
-export const WIDTH_FRACTION: Record<AvatarSize, number> = { small: 0.25, medium: 0.33, large: 0.5 };
-
-/**
- * Where the avatar goes. `aspect` is the avatar's width/height (a cropped
- * transparent clip, or a portrait card for framed video and photos).
- * Transparent avatars stand on the bottom edge; framed ones float above it.
- */
-export function avatarRect(
-  W: number, H: number, k: number, position: AvatarPosition, size: AvatarSize, aspect: number, framed: boolean
-): Rect {
-  if (position === "full") return { x: 0, y: 0, w: W, h: H };
-  const margin = 36 * k, labelSpace = framed ? 52 * k : 0;
-  let w = W * WIDTH_FRACTION[size];
-  let h = w / aspect;
-  const maxH = H - (framed ? margin + labelSpace + 20 * k : 10 * k);
-  if (h > maxH) {
-    h = maxH;
-    w = h * aspect;
-  }
-  const y = framed ? H - margin - labelSpace - h : H - h;
-  const x = position === "left" ? (framed ? margin : 0)
-    : position === "right" || position === "corner" ? W - w - (framed ? margin : 0)
-    : (W - w) / 2;
-  return { x, y, w, h };
-}
-
 /** Bounding box of the visible (non-transparent) pixels in a frame, normalized, grown over time */
 const alphaBoxes = new WeakMap<HTMLVideoElement, { box: Rect; samples: number; last: number }>();
 const probe = typeof document !== "undefined" ? document.createElement("canvas") : null;
@@ -143,7 +123,7 @@ export function alphaBounds(el: HTMLVideoElement, frame: HTMLCanvasElement, now:
   return box;
 }
 
-export interface ActiveClip { key: string; clip: AvatarClip; offset: number }
+export interface ActiveClip { key: string; clip: AvatarClip; offset: number; /** the line's layer is muted */ muted: boolean }
 
 /** The voiceover line being spoken at main time m (offset is in the clip's own seconds) */
 export function activeClip(state: RenderState, m: number): ActiveClip | null {
@@ -151,7 +131,10 @@ export function activeClip(state: RenderState, m: number): ActiveClip | null {
   for (const slot of speechSchedule(state.parse, state.project, state.clips)) {
     const { key, clip } = slot;
     if (!key || clip?.status !== "done" || !clip.duration) continue;
-    if (m >= slot.start && m < slot.end) return { key, clip, offset: (m - slot.start) * rate };
+    if (m >= slot.start && m < slot.end) {
+      const spoken = state.parse?.scenes[slot.sceneIndex]?.spoken ?? "";
+      return { key, clip, offset: (m - slot.start) * rate, muted: layoutFor(state.project, spoken).muted };
+    }
   }
   return null;
 }
@@ -188,7 +171,8 @@ function drawCard(
 export function renderFrame(
   ctx: CanvasRenderingContext2D, W: number, H: number, t: number,
   state: RenderState, media: Media, effects: TimedEffect[], opts: FrameOptions = {}
-) {
+): FrameInfo {
+  const info: FrameInfo = { avatar: null };
   const k = H / 1080;
   const { branding, avatar } = state.project;
   const timing = state.timing;
@@ -200,13 +184,13 @@ export function renderFrame(
   if (t < timing.intro) {
     drawCard(ctx, W, H, k, state, media, branding.intro.title, branding.intro.subtitle, false, cardFade(t, timing.intro));
     ctx.restore();
-    return;
+    return info;
   }
   const m = t - timing.intro;
   if (m >= timing.main && timing.outro > 0) {
     drawCard(ctx, W, H, k, state, media, branding.outro.cta, branding.outro.url, true, cardFade(m - timing.main, timing.outro));
     ctx.restore();
-    return;
+    return info;
   }
 
   // Base video with zoom and targeted effects
@@ -231,19 +215,26 @@ export function renderFrame(
   if (opts.editTargets) drawTargetBoxes(ctx, effects, content, k, opts.selectedDirectionId ?? null, branding.accent);
   else drawOverlays(ctx, effects, m, W, H, k, branding, content, zoom);
 
+  // Avatar layer: the segment on screen now decides visibility, placement and motion
   const heygen = state.project.voice.engine === "heygen";
-  const showAvatar = avatar.enabled && (heygen ? !!avatar.heygen : !!currentPhoto(avatar));
-  const look = showAvatar ? avatarLook(state, media, m, t) : null;
-  const aRect = look ? avatarRect(W, H, k, avatar.position, avatar.size, look.aspect, look.framed) : null;
+  const segment = activeSegment(avatarSegments(state.parse, state.project, state.clips, timing.main), m);
+  const showAvatar = avatar.enabled && !!segment?.layout.visible && (heygen ? !!avatar.heygen : !!currentPhoto(avatar));
+  const look = showAvatar ? avatarLook(state, media, m, t, segment) : null;
+  const full = segment?.layout.preset === "full";
+  const aRect = look && segment ? (full ? fullBox(look, W, H) : layoutBox(segment.layout, W, H, look.aspect)) : null;
   if (branding.captions.enabled && state.parse) {
-    // keep captions clear of the avatar
-    let left = 0, right = W, forceTop = false;
-    if (aRect && avatar.position === "left") left = aRect.x + aRect.w;
-    if (aRect && avatar.position === "right") right = aRect.x;
-    if (aRect && avatar.position === "bottom-center") forceTop = true;
-    drawCaptions(ctx, state, m, H, k, left, right, forceTop);
+    // keep captions clear of a corner avatar
+    let left = 0, right = W;
+    if (aRect && !full && aRect.y + aRect.h > H * 0.6) {
+      if (aRect.x + aRect.w / 2 < W / 2) left = aRect.x + aRect.w;
+      else right = aRect.x;
+    }
+    drawCaptions(ctx, state, m, H, k, left, right, right - left < W * 0.35);
   }
-  if (look && aRect) drawAvatar(ctx, state, effects, m, t, W, H, k, aRect, content, look, opts.editTargets ?? false);
+  if (look && aRect && segment) {
+    drawAvatar(ctx, state, effects, m, t, W, H, k, aRect, content, look, opts.editTargets ?? false, full, motionAt(segment, m, W));
+    info.avatar = { key: segment.key, box: aRect, full };
+  }
 
   if (media.logo) {
     const lw = branding.logoSize * k;
@@ -256,6 +247,14 @@ export function renderFrame(
 
   if (!opts.editTargets) drawTransitions(ctx, effects, m, W, H, branding.primary, branding.accent);
   ctx.restore();
+  return info;
+}
+
+/** Full screen: a framed video fills the frame; a cut-out presenter stands full height */
+function fullBox(look: AvatarLook, W: number, H: number): Rect {
+  if (look.framed) return { x: 0, y: 0, w: W, h: H };
+  const w = Math.min(W, H * look.aspect), h = w / look.aspect;
+  return { x: (W - w) / 2, y: H - h, w, h };
 }
 
 function drawBroll(ctx: CanvasRenderingContext2D, W: number, H: number, k: number, m: number, state: RenderState, media: Media, accent: string) {
@@ -332,7 +331,7 @@ interface AvatarLook {
 const CARD_ASPECT = 0.8;
 
 /** Pick the avatar's frame for time m: the speaking clip, or a still between lines */
-function avatarLook(state: RenderState, media: Media, m: number, t: number): AvatarLook | null {
+function avatarLook(state: RenderState, media: Media, m: number, t: number, segment: AvatarSegment | null): AvatarLook | null {
   const heygen = state.project.voice.engine === "heygen";
   const active = activeClip(state, m);
   const env = active?.clip.envelope;
@@ -344,16 +343,22 @@ function avatarLook(state: RenderState, media: Media, m: number, t: number): Ava
   // The speaking clip may not have a decoded frame yet — hold the nearest one instead of vanishing
   if (heygen && el instanceof HTMLVideoElement && !hasFrame(el)) el = undefined;
   if (heygen && !(el instanceof HTMLVideoElement)) {
-    // Between lines: hold the frame of the nearest HeyGen line (last one played, else the next)
-    const near = nearestClip(state, m, media);
-    el = near ? media.clips.get(near.key) : undefined;
-    clip = near?.clip;
+    // Between lines: hold this layer's own clip, else the nearest rendered line
+    const own = segment?.clipKey ? media.clips.get(segment.clipKey) : undefined;
+    if (own instanceof HTMLVideoElement && hasFrame(own) && segment?.clip?.status === "done") {
+      el = own;
+      clip = segment.clip;
+    } else {
+      const near = nearestClip(state, m, media);
+      el = near ? media.clips.get(near.key) : undefined;
+      clip = near?.clip;
+    }
     still = true;
   }
   if (el instanceof HTMLVideoElement) {
     const frame = videoFrame(el);
     if (frame) {
-      if (clip?.alpha && state.project.avatar.position !== "corner") {
+      if (clip?.alpha) {
         const b = alphaBounds(el, frame, t * 1000);
         if (b) {
           const crop = { x: b.x * frame.width, y: b.y * frame.height, w: b.w * frame.width, h: b.h * frame.height };
@@ -398,10 +403,10 @@ function nearestClip(state: RenderState, m: number, media: Media): { key: string
 
 function drawAvatar(
   ctx: CanvasRenderingContext2D, state: RenderState, effects: TimedEffect[],
-  m: number, t: number, W: number, H: number, k: number, box: Rect, content: Rect, look: AvatarLook, editing: boolean
+  m: number, t: number, W: number, H: number, k: number, box: Rect, content: Rect, look: AvatarLook, editing: boolean,
+  full: boolean, motion: Motion
 ) {
   const { avatar, branding, voice } = state.project;
-  const full = avatar.position === "full";
   const heygenGestures = voice.engine === "heygen" && gestureSupport(avatar.heygen).supported;
   const { amp, speaking } = look;
 
@@ -428,8 +433,9 @@ function drawAvatar(
       scale *= 1 + 0.02 * amp;
     }
   }
-  cx += g.dx;
+  cx += g.dx + motion.dx;
   cy += dy;
+  scale *= motion.scale;
 
   if (g.pointAt && g.pointAt.strength > 0.05) {
     ctx.save();
@@ -447,14 +453,17 @@ function drawAvatar(
   }
 
   ctx.save();
-  ctx.globalAlpha = g.alpha;
+  ctx.globalAlpha = g.alpha * motion.alpha;
   // scale about the feet for free-standing avatars, the center for cards
   const pivotY = look.framed ? cy : box.y + box.h;
   ctx.translate(cx, pivotY);
   ctx.rotate((rotate * Math.PI) / 180);
   ctx.scale(scale, scale);
   const local: Rect = { x: -box.w / 2, y: look.framed ? -box.h / 2 : -box.h, w: box.w, h: box.h };
-  const c = look.crop;
+  // A framed video shown full screen is cropped to the frame's shape, never stretched
+  const c = full && look.framed && look.src
+    ? coverCrop((look.src as HTMLCanvasElement).width || (look.src as HTMLImageElement).naturalWidth, (look.src as HTMLCanvasElement).height || (look.src as HTMLImageElement).naturalHeight, W / H)
+    : look.crop;
 
   if (full) {
     if (look.src) ctx.drawImage(look.src, c.x, c.y, c.w, c.h, local.x, local.y, local.w, local.h);
@@ -488,12 +497,12 @@ function drawAvatar(
 
   if (avatar.label) {
     const r = { x: cx - box.w / 2, y: box.y + (cy - box.y - box.h / 2), w: box.w, h: box.h };
-    drawAvatarLabel(ctx, r, W, H, k, avatar.position, look.framed, avatar.label, avatar.labelColor, branding, speaking ? amp : -1, t, g.alpha);
+    drawAvatarLabel(ctx, r, W, H, k, full, look.framed, avatar.label, avatar.labelColor, branding, speaking ? amp : -1, t, g.alpha * motion.alpha);
   }
 }
 
 function drawAvatarLabel(
-  ctx: CanvasRenderingContext2D, r: Rect, W: number, H: number, k: number, position: AvatarPosition, framed: boolean,
+  ctx: CanvasRenderingContext2D, r: Rect, W: number, H: number, k: number, full: boolean, framed: boolean,
   label: string, color: string, branding: RenderState["project"]["branding"], level: number, t: number, alpha: number
 ) {
   ctx.save();
@@ -504,7 +513,9 @@ function drawAvatarLabel(
   let x = r.x + r.w / 2 - tw / 2;
   // under a card; over the lower legs of a free-standing avatar
   let y = framed ? r.y + r.h + 10 * k : H - h - 28 * k;
-  if (position === "full") {
+  // a card on the bottom edge carries its label inside, just above the edge
+  if (framed && y + h > H - 4 * k) y = r.y + r.h - h - 12 * k;
+  if (full) {
     x = 40 * k;
     y = H - 40 * k - h;
   }

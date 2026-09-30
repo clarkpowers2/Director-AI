@@ -50,6 +50,12 @@ export function spokenOnly(s: string): string {
     !/^\s*(?:\[[^\]]+\]|(?:the\s+)?(?:presenter|avatar|camera|screen)\s+|(?:Victor|ARIA|presenter|avatar)\s+(?:gestures?|smiles?|points?|looks?|turns?|walks?|moves?|nods?|waves?|faces?)\b)/i.test(sentence)
   ).join(" ").replace(/\[(?:visual|scene|b-?roll|stage direction|direction)[^\]]*\]/gi, "").trim();
 }
+/**
+ * Text after a keyword stays one "sentence": the parser reads anything after the first
+ * full stop ("CAPTION: One hub. Every team.") as speech, so inner full stops become " · ".
+ */
+const directionText = (s: string) => oneLine(s).replace(/\.\s+(?=\S)/g, " · ").replace(/\.$/, "");
+
 /** Spoken text goes inside double quotes, so keyword-like words can't be read as directions */
 const quoted = (s: string) => `"${oneLine(s).replace(/"/g, "”")}"`;
 
@@ -71,20 +77,22 @@ export function planToScript(plan: ProductionPlan, presenter: string | null): st
   const total = Math.max(5, plan.estimated_duration_seconds);
   const out: string[] = [];
   for (const s of normalizeScenes(plan.scenes, total)) {
-    out.push(`[${formatSeconds(s.start_seconds)}]`);
-    if (s.purpose.trim()) out.push(`[Scene: ${oneLine(s.purpose)}]`);
+    // The timestamp goes on the voiceover itself, so speech (and the avatar layer) starts
+    // exactly at the scene start; notes and directions follow within the scene.
     const speech = spokenOnly(s.voiceover);
-    if (speech) out.push(`VOICEOVER: ${quoted(speech)}`);
+    const stamp = `[${formatSeconds(s.start_seconds)}]`;
+    out.push(speech ? `${stamp} VOICEOVER: ${quoted(speech)}` : stamp);
+    if (s.purpose.trim()) out.push(`[Scene: ${oneLine(s.purpose)}]`);
     const stage = [s.avatar.direction, s.voiceover.split(/(?<=[.!?])\s+/).filter(sentence => sentence !== spokenOnly(sentence)).join(" ")].filter(Boolean).join(" ");
     if (presenter && s.avatar.appears && stage.trim()) {
-      const d = oneLine(stage).replace(/\.$/, "");
+      const d = directionText(stage);
       out.push(`AVATAR: ${d.toLowerCase().startsWith(presenter.toLowerCase()) ? d : `${presenter} ${d.charAt(0).toLowerCase()}${d.slice(1)}`}`);
     }
     if (s.visual.trim()) out.push(`[Visual: ${oneLine(s.visual)}]`);
-    for (const o of s.overlays) if (o.text.trim()) out.push(`${o.type}: ${oneLine(o.text)}`);
-    for (const e of s.effects) if (e.target.trim()) out.push(`${e.type}: ${oneLine(e.target).replace(/\.$/, "")}`);
+    for (const o of s.overlays) if (o.text.trim()) out.push(`${o.type}: ${directionText(o.text)}`);
+    for (const e of s.effects) if (e.target.trim()) out.push(`${e.type}: ${directionText(e.target)}`);
     if (s.broll?.trim()) out.push(`[B-roll: ${oneLine(s.broll)}]`);
-    if (s.transition?.trim()) out.push(`TRANSITION: ${oneLine(s.transition)}`);
+    if (s.transition?.trim()) out.push(`TRANSITION: ${directionText(s.transition)}`);
     out.push("");
   }
   return out.join("\n").trim() + "\n";

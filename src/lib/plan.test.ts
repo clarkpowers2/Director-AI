@@ -1,5 +1,6 @@
 /** Plan → project tests — run with `node src/lib/plan.test.ts` */
 import assert from "node:assert/strict";
+import { parseScript } from "./parser.ts";
 import { planToProject, spokenLines, type ProductionPlan } from "./plan.ts";
 import { defaultProject, layoutFor } from "./project.ts";
 
@@ -69,9 +70,22 @@ const checks: [string, () => void | Promise<void>][] = [
     assert.deepEqual(outputDimensions("1080p", "9:16"), { w: 608, h: 1080 });
     assert.deepEqual(outputDimensions("1080p", "1:1"), { w: 1080, h: 1080 });
   }],
+  ["multi-sentence captions, titles, effects and stage directions never become speech", () => {
+    const multi: ProductionPlan = { ...plan, scenes: [{ ...plan.scenes[0], voiceover: "Only this is spoken.",
+      overlays: [{ type: "CAPTION", text: "Scattered data. Missed moments. Lost loyalty." }, { type: "TITLE", text: "One hub. Every team." }],
+      effects: [{ type: "HIGHLIGHT", target: "Alerts panel. Green badges." }], transition: "Fade. Then slide.",
+      avatar: { ...plan.scenes[0].avatar, direction: "Victor smiles. He points at the screen." } }] };
+    const p = planToProject(multi, { prompt: "", duration: 60, format: "16:9", style: "", presenter: "Victor", usage: "Full video", voice: "default" }, defaultProject());
+    assert.deepEqual(spokenLines(p), ["Only this is spoken."]);
+    assert.match(p.script, /^CAPTION: Scattered data · Missed moments · Lost loyalty$/m);
+    assert.match(p.script, /^AVATAR: Victor smiles · He points at the screen$/m);
+  }],
   ["timestamps, duration, branding carried over", () => {
     const p = planToProject(plan, { prompt: "", duration: 60, format: "16:9", style: "", presenter: "Victor", usage: "DirectorAI decides", voice: "default" }, defaultProject());
-    assert.deepEqual(p.script.match(/^\[\d+:\d+\]$/gm), ["[0:00]", "[0:12]", "[0:45]", "[0:52]"]);
+    assert.deepEqual(p.script.match(/^\[\d+:\d+\]/gm), ["[0:00]", "[0:12]", "[0:45]", "[0:52]"]);
+    // voiceover starts exactly at each scene's timestamp
+    const parsed = parseScript(p.script, "Victor", 60).scenes.filter(x => x.spoken).map(x => x.start);
+    assert.deepEqual(parsed, [0, 12, 45, 52]);
     assert.equal(p.durationInput, 60);
     assert.equal(p.branding.outro.url, "haven-mos.org");
     assert.equal(p.branding.captions.enabled, true);

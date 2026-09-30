@@ -1,4 +1,7 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { EyeOff } from "lucide-react";
+import { moveSegment, trimSegment, type AvatarSegment } from "../lib/avatarLayers.ts";
+import type { AvatarEditing } from "./VideoPreview.tsx";
 import type { Player } from "../lib/player.ts";
 import { usePlayerTime } from "./VideoPreview.tsx";
 import { EFFECT_COLOR, EFFECT_ICON, EFFECT_LABEL, V2_ONLY, type TimedEffect } from "../lib/effects.ts";
@@ -16,6 +19,9 @@ interface Props {
   chapters: Chapter[];
   selectedId: string | null;
   onSelect: (d: Direction) => void;
+  /** Avatar track: one block per avatar layer (on-screen window) */
+  avatarSegments?: AvatarSegment[];
+  avatarEditing?: AvatarEditing;
 }
 
 const CLIP_STYLE: Record<string, string> = {
@@ -38,6 +44,33 @@ export default function Timeline(p: Props) {
     p.player.seek(((clientX - r.left) / r.width) * total);
   };
 
+  // Avatar track: drag the body to move a layer (window + speech), drag an edge to trim its window
+  const [avatarDrag, setAvatarDrag] = useState<{ key: string; mode: "move" | "start" | "end"; x0: number; seg: AvatarSegment; moved: boolean } | null>(null);
+  const secondsPerPx = () => total / Math.max(1, barRef.current?.getBoundingClientRect().width ?? 1);
+  const avatarPointerDown = (e: React.PointerEvent<HTMLDivElement>, seg: AvatarSegment) => {
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    const edge = Math.min(10, r.width / 4);
+    const mode = e.clientX - r.left < edge ? "start" : r.right - e.clientX < edge ? "end" : "move";
+    e.currentTarget.setPointerCapture(e.pointerId);
+    p.avatarEditing?.select(seg.key);
+    setAvatarDrag({ key: seg.key, mode, x0: e.clientX, seg, moved: false });
+  };
+  const avatarPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = avatarDrag;
+    if (!d || !p.avatarEditing) return;
+    const delta = (e.clientX - d.x0) * secondsPerPx();
+    if (!d.moved && Math.abs(e.clientX - d.x0) < 3) return;
+    if (!d.moved) setAvatarDrag({ ...d, moved: true });
+    const change = d.mode === "move" ? moveSegment(d.seg, delta, p.timing.main)
+      : trimSegment(d.seg, d.mode, (d.mode === "start" ? d.seg.start : d.seg.end) + delta, p.timing.main);
+    p.avatarEditing.change(d.key, change);
+  };
+  const avatarPointerUp = () => {
+    if (avatarDrag && !avatarDrag.moved) p.player.seek(main(avatarDrag.seg.start));
+    setAvatarDrag(null);
+  };
+
   const step = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find(s => total / s <= 12) ?? 900;
   const ticks = Array.from({ length: Math.floor(total / step) + 1 }, (_, i) => i * step);
 
@@ -48,6 +81,7 @@ export default function Timeline(p: Props) {
         <span>{formatSeconds(p.timing.total)} total</span>
         <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-gold/70" /> avatar speaking</span>
         <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-sky-400/50" /> B-roll</span>
+        {p.avatarSegments?.length ? <span className="flex items-center gap-1"><span className="h-2 w-3 rounded-sm bg-violet-400/60" /> avatar on screen</span> : null}
         <span className="ml-auto hidden sm:inline">Click to seek · click a marker to jump to it</span>
       </div>
 
@@ -99,6 +133,32 @@ export default function Timeline(p: Props) {
             </div>
           ))}
         </div>
+
+        {/* avatar layers */}
+        {p.avatarSegments && p.avatarSegments.length > 0 && (
+          <div className="relative mt-1 h-7 rounded-md bg-navy/60" aria-label="Avatar track">
+            {p.avatarSegments.map(seg => {
+              const selected = p.avatarEditing?.selectedKey === seg.key;
+              const label = seg.layout.visible ? (seg.layout.preset === "full" ? "Full" : seg.layout.preset === "custom" ? `Custom ${Math.round(seg.layout.scale * 100)}%` : `${seg.layout.preset.replace("-", " ")} ${Math.round(seg.layout.scale * 100)}%`) : "Hidden";
+              return (
+                <div key={`${seg.key}-${seg.index}`} data-pin role="button" tabIndex={0}
+                  aria-label={`Avatar scene ${seg.index + 1}: ${label}, ${formatSeconds(seg.start)} to ${formatSeconds(seg.end)}`} aria-pressed={selected}
+                  title={`Avatar scene ${seg.index + 1} · ${label} · ${formatSeconds(seg.start)}–${formatSeconds(seg.end)} — drag to move, drag an edge to trim`}
+                  onPointerDown={e => avatarPointerDown(e, seg)} onPointerMove={avatarPointerMove} onPointerUp={avatarPointerUp} onPointerCancel={avatarPointerUp}
+                  onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { p.avatarEditing?.select(seg.key); p.player.seek(main(seg.start)); } }}
+                  className={`absolute top-0.5 flex h-6 cursor-grab items-center gap-1 overflow-hidden rounded border px-1.5 text-[10px] font-semibold capitalize leading-none ${
+                    seg.layout.visible ? "border-violet-300/70 bg-violet-400/35 text-white" : "border-white/25 bg-[repeating-linear-gradient(45deg,transparent_0_4px,rgba(255,255,255,0.08)_4px_8px)] text-white/55"
+                  } ${selected ? "ring-2 ring-gold" : ""}`}
+                  style={{ left: pct(main(seg.start)), width: pct(Math.max(0.3, seg.end - seg.start)) }}>
+                  <span className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-white/25" aria-hidden />
+                  {!seg.layout.visible && <EyeOff size={11} aria-hidden />}
+                  <span className="truncate pl-1">{seg.index + 1} · {label}</span>
+                  <span className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-white/25" aria-hidden />
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* effect markers */}
         <div className="relative mt-1 h-9">

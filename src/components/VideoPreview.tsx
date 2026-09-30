@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Crosshair, Maximize, Pause, Play, SkipBack, Upload } from "lucide-react";
 import type { Player } from "../lib/player.ts";
-import { baseAspect, contentRect, renderFrame, type Media } from "../lib/render.ts";
+import { baseAspect, contentRect, renderFrame, type FrameInfo, type Media } from "../lib/render.ts";
+import { dragTo, resizeTo, type Rect } from "../lib/avatarLayers.ts";
+import type { AvatarLayout } from "../lib/project.ts";
 import type { TimedEffect } from "../lib/effects.ts";
 import { formatSeconds } from "../lib/parser.ts";
 import type { RenderState, TargetRect } from "../lib/project.ts";
@@ -33,7 +35,15 @@ export interface Placement {
   onCancel: () => void;
 }
 
+/** Select, drag and resize the avatar layer in the preview. Edits layout data only — never re-renders footage. */
+export interface AvatarEditing {
+  selectedKey: string | null;
+  select: (key: string | null) => void;
+  change: (key: string, change: Partial<AvatarLayout>) => void;
+}
+
 interface Props {
+  avatarEditing?: AvatarEditing;
   player: Player;
   media: Media;
   getState: () => RenderState;
@@ -54,6 +64,7 @@ export default function VideoPreview(p: Props) {
   const total = state.timing.total;
   const format = state.project.format ?? "16:9";
   const W = format === "16:9" ? 1280 : format === "9:16" ? 405 : 720;
+  const HANDLE = 16;
   const H = format === "16:9" ? 720 : 720;
   const aspectRatio = format === "16:9" ? "16 / 9" : format === "9:16" ? "9 / 16" : "1 / 1";
 
@@ -61,6 +72,10 @@ export default function VideoPreview(p: Props) {
   live.current = p;
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // What the last frame drew (the avatar's box), and an in-progress avatar drag/resize
+  const frameRef = useRef<FrameInfo>({ avatar: null });
+  const gesture = useRef<{ mode: "drag" | "resize"; key: string; box: Rect; offX: number; offY: number } | null>(null);
+  const [cursor, setCursor] = useState<string>("");
 
   useEffect(() => {
     const ctx = canvasRef.current!.getContext("2d")!;
@@ -71,7 +86,27 @@ export default function VideoPreview(p: Props) {
       const shape = state.project.format ?? "16:9";
       const w = shape === "16:9" ? 1280 : shape === "9:16" ? 405 : 720;
       const h = 720;
-      renderFrame(ctx, w, h, player.t, state, media, effects, { editTargets: showTargets || !!placement, selectedDirectionId: selectedId });
+      const info = renderFrame(ctx, w, h, player.t, state, media, effects, { editTargets: showTargets || !!placement, selectedDirectionId: selectedId });
+      frameRef.current = info;
+      // Selected avatar layer: bounds and a resize handle
+      const editing = live.current.avatarEditing;
+      if (editing?.selectedKey && info.avatar?.key === editing.selectedKey && !placement) {
+        const b = info.avatar.box;
+        ctx.save();
+        ctx.strokeStyle = "#c9a84c";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 6]);
+        ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
+        ctx.setLineDash([]);
+        if (!info.avatar.full) {
+          ctx.fillStyle = "#c9a84c";
+          ctx.fillRect(b.x + b.w - HANDLE, b.y + b.h - HANDLE, HANDLE, HANDLE);
+          ctx.strokeStyle = "#1a2744";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(b.x + b.w - HANDLE, b.y + b.h - HANDLE, HANDLE, HANDLE);
+        }
+        ctx.restore();
+      }
       const d = draftRef.current;
       if (d) {
         ctx.save();
@@ -98,7 +133,41 @@ export default function VideoPreview(p: Props) {
     setDraft(d);
   };
 
+  // ── avatar layer: select / drag / resize ──
+  const hitHandle = (pt: { x: number; y: number }, b: Rect) =>
+    pt.x >= b.x + b.w - HANDLE * 1.6 && pt.x <= b.x + b.w + 4 && pt.y >= b.y + b.h - HANDLE * 1.6 && pt.y <= b.y + b.h + 4;
+  const inside = (pt: { x: number; y: number }, b: Rect) => pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h;
+
+  const avatarDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const editing = p.avatarEditing;
+    if (!editing) return;
+    const pt = toCanvas(e);
+    const hit = frameRef.current.avatar;
+    if (!hit || !inside(pt, hit.box)) return editing.select(null);
+    p.player.pause();
+    editing.select(hit.key);
+    if (hit.full) return; // full screen fills the frame: choose a smaller preset to move it
+    const selected = editing.selectedKey === hit.key;
+    gesture.current = { mode: selected && hitHandle(pt, hit.box) ? "resize" : "drag", key: hit.key, box: hit.box, offX: pt.x - hit.box.x, offY: pt.y - hit.box.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const avatarMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const pt = toCanvas(e);
+    const g = gesture.current, editing = p.avatarEditing;
+    if (!g || !editing) {
+      const hit = frameRef.current.avatar;
+      setCursor(hit && !hit.full && inside(pt, hit.box) ? (editing?.selectedKey === hit.key && hitHandle(pt, hit.box) ? "nwse-resize" : "move") : "");
+      return;
+    }
+    editing.change(g.key, g.mode === "drag" ? dragTo(g.box, pt.x - g.offX, pt.y - g.offY, W, H) : resizeTo(g.box, pt.x, pt.y, W, H));
+  };
+
   const finish = () => {
+    if (gesture.current) {
+      gesture.current = null;
+      return;
+    }
     const draft = draftRef.current;
     if (!draft || !p.placement) return updateDraft(null);
     const content = contentRect(W, H, baseAspect(p.media));
@@ -126,14 +195,15 @@ export default function VideoPreview(p: Props) {
           height={H}
           aria-label="Video preview"
           className={`block w-full ${p.placement ? "cursor-crosshair" : ""}`}
-          style={{ aspectRatio }}
+          style={{ aspectRatio, cursor: p.placement ? undefined : cursor || undefined }}
           onPointerDown={e => {
-            if (!p.placement) return;
+            if (!p.placement) return avatarDown(e);
             e.currentTarget.setPointerCapture(e.pointerId);
             const pt = toCanvas(e);
             updateDraft({ x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y });
           }}
           onPointerMove={e => {
+            if (!p.placement) return avatarMove(e);
             const d = draftRef.current;
             if (!d) return;
             const pt = toCanvas(e);
