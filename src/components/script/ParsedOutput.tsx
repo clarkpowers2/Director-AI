@@ -93,12 +93,12 @@ export default function ParsedOutput({ parse, intro, selectedId, onSelectDirecti
               key={d.id}
               onClick={() => onSelectDirection(d)}
               className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-left text-xs transition ${selectedId === d.id ? "border-gold bg-gold/15" : "border-white/15 hover:border-white/40"}`}
-              title={V2_ONLY.has(d.type) ? "Shown on the timeline; the avatar can't act this out yet (v2)" : "Select to place or style this effect"}
+              title={V2_ONLY.has(d.type) ? "Avatar gesture — acted out by studio avatars with gesture support (✋)" : "Select to place or style this effect"}
             >
               <span className="font-mono text-white/50">{scene.start === null ? `S${scene.index + 1}` : `${scene.estimated ? "~" : ""}${formatSeconds(scene.start)}`}</span>
               <span>{EFFECT_ICON[d.type]}</span>
               <span className="truncate" style={{ color: EFFECT_COLOR[d.type] }}>{d.display}</span>
-              {V2_ONLY.has(d.type) && <span className="v2-badge !py-0">v2</span>}
+              {V2_ONLY.has(d.type) && <span className="v2-badge !py-0">gesture</span>}
             </button>
           ))}
         </div>

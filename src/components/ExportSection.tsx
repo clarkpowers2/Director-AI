@@ -14,7 +14,8 @@ interface Props {
   clipsReady: number;
   clipsNeeded: number;
   canGenerate: boolean;
-  ensureAvatar: () => Promise<boolean>;
+  /** Open the Render Avatar panel — export never renders avatar scenes by itself */
+  onRenderAvatar: () => void;
   pausePreview: () => void;
   fileBase: string;
 }
@@ -67,9 +68,8 @@ export default function ExportSection(p: Props) {
   const exportFull = () => run("video", async signal => {
     p.pausePreview();
     if (includeAvatar && p.canGenerate && p.clipsReady < p.clipsNeeded) {
-      cb.onStatus("Generating avatar...");
-      const ok = await p.ensureAvatar();
-      if (!ok) throw new ExportError("Some avatar lines didn't generate. Check the Avatar Studio, or export without the avatar.");
+      // Rendering uses provider credits, so it only ever starts from a confirmed Render Avatar panel
+      throw new ExportError(`${p.clipsNeeded - p.clipsReady} avatar scene${p.clipsNeeded - p.clipsReady > 1 ? "s aren't" : " isn't"} rendered yet. Use "Render missing scenes" first, or export without the avatar.`);
     }
     const s = p.getState();
     const renderState = includeAvatar ? s : { ...s, project: { ...s.project, avatar: { ...s.project.avatar, enabled: false } } };
@@ -78,7 +78,7 @@ export default function ExportSection(p: Props) {
   });
 
   return (
-    <Section id="export" number={6} icon={<PackageOpen size={18} />} title="Export" subtitle="Render the finished video and its companion files">
+    <Section id="export" icon={<PackageOpen size={18} />} title="Render and download" subtitle="The finished video, plus voiceover, captions and scene directions">
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <div className="rounded-xl border border-gold/40 bg-gold/5 p-4">
           <div className="mb-3 flex items-center gap-2 font-semibold"><Film size={18} className="text-gold" /> Full video</div>
@@ -95,7 +95,10 @@ export default function ExportSection(p: Props) {
           <label className="mt-3 flex items-center justify-between gap-3 text-sm text-white/75">
             <span>
               Include avatar
-              <span className="block text-[11px] text-white/45">{p.clipsNeeded ? `${p.clipsReady}/${p.clipsNeeded} lines ready${p.clipsReady < p.clipsNeeded && p.canGenerate ? " — missing lines generate first" : ""}` : "No voiceover lines"}</span>
+              <span className="block text-[11px] text-white/45">{p.clipsNeeded ? `${p.clipsReady}/${p.clipsNeeded} scenes rendered` : "No voiceover lines"}</span>
+              {includeAvatar && p.canGenerate && p.clipsReady < p.clipsNeeded && (
+                <button className="mt-1 text-[11px] text-gold hover:underline" onClick={p.onRenderAvatar}>Render missing scenes…</button>
+              )}
             </span>
             <Toggle checked={includeAvatar} onChange={setIncludeAvatar} label="Include avatar" />
           </label>

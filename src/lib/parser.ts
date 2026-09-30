@@ -71,6 +71,9 @@ const EFFECT_WORDS: [DirectionType, RegExp][] = [
 // Stage direction followed by speech: Victor walks in and says: "Welcome."
 const SAYS_PATTERN = /^(.+?)(?:,?\s+and)?\s+(?:says|said|say)\s*:\s*(["“'‘].*)?$/i;
 
+// Block heading for speech: "VOICEOVER:" alone (the lines below it are spoken), or "VOICEOVER: \"Hello.\"" inline
+const VOICEOVER_PATTERN = /^(?:VOICE[\s-]?OVER|V\.?O\.?|NARRATION|NARRATOR|DIALOGUE)\s*:\s*(.*)$/i;
+
 // Timestamp at line start: mm:ss, h:mm:ss, or seconds with an "s" suffix. Plain numbers never match.
 export const TIMESTAMP_PATTERN = /^\[?(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?|\d+(?:\.\d+)?s)(?![\w:])\]?\s*[-–—]?\s*/i;
 
@@ -126,6 +129,8 @@ interface ParsedLine {
   spoken: string;
   actions: RawDirection[];
   awaitsSpeech: boolean;
+  /** A block label alone on its line: "VOICEOVER:" (SPEECH) or a direction keyword like "AVATAR:" */
+  heading: DirectionType | "SPEECH" | null;
 }
 
 function parseLine(line: string): ParsedLine {
@@ -147,9 +152,23 @@ function parseLine(line: string): ParsedLine {
     return " ";
   }).replace(/\s+/g, " ").trim();
 
+  // 2b. "VOICEOVER:" labels speech — drop the label; alone on its line it heads the lines below
+  let heading: ParsedLine["heading"] = null;
+  const voMatch = rest.match(VOICEOVER_PATTERN);
+  if (voMatch) {
+    rest = voMatch[1].trim();
+    if (!rest && actions.length === 0) heading = "SPEECH";
+  }
+
   // 3. Keywords only at the START of the remaining text; chaining allowed ("ZOOM: a. HIGHLIGHT: b.")
   let kwMatch: RegExpMatchArray | null;
   while ((kwMatch = rest.match(LINE_KEYWORD_PATTERN)) && (kwMatch[1] || CAPS_KEYWORD_PATTERN.test(kwMatch[2]))) {
+    // "AVATAR:" alone on its line heads a block: the next line is the direction's text, never speech
+    if (kwMatch[1] && !kwMatch[3].trim() && !kwMatch[4].trim() && actions.length === 0) {
+      heading = normalizeType(kwMatch[1]);
+      rest = "";
+      break;
+    }
     actions.push(keywordDirection(kwMatch[1] || kwMatch[2], kwMatch[3].trim()));
     rest = kwMatch[4].trim();
   }
@@ -164,7 +183,7 @@ function parseLine(line: string): ParsedLine {
     awaitsSpeech = !rest;
   }
 
-  return { timestamp, spoken: stripQuotes(rest), actions, awaitsSpeech };
+  return { timestamp, spoken: stripQuotes(rest), actions, awaitsSpeech, heading };
 }
 
 interface Timing { start: number; duration: number; estimated: boolean }
@@ -196,12 +215,23 @@ export function parseScript(script: string, avatarName = "Presenter", videoDurat
   const lines: (ParsedLine & { timestamp: string | null; lines: number[]; spokenLine: number | null })[] = [];
   let pendingTimestamp: string | null = null;
   let pendingLines: number[] = [];
+  let heading: ParsedLine["heading"] = null;
   const rawLines = script.split("\n");
   for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex++) {
     const line = rawLines[lineIndex];
     if (!line.trim()) continue;
-    const parsed = parseLine(line);
+    let parsed = parseLine(line);
     if (parsed.timestamp) pendingTimestamp = parsed.timestamp;
+    if (parsed.heading) {
+      heading = parsed.heading;
+      pendingLines.push(lineIndex);
+      continue;
+    }
+    // The line under "AVATAR:" (or any direction heading) is that direction, e.g. "Victor gestures toward the screen."
+    if (heading && heading !== "SPEECH" && !parsed.timestamp) {
+      parsed = { ...parsed, spoken: "", awaitsSpeech: false, actions: [keywordDirection(heading, line.trim().replace(/\.$/, ""))] };
+    }
+    heading = null;
     if (!parsed.spoken && parsed.actions.length === 0) {
       pendingLines.push(lineIndex); // timestamp-only line belongs to the next scene
       continue;

@@ -1,5 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronDown, X } from "lucide-react";
+import { X } from "lucide-react";
+
+export function useDebounced<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return v;
+}
 
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -8,9 +17,10 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition ${checked ? "bg-gold" : "bg-white/15"}`}
+      className={`relative h-7 w-12 shrink-0 rounded-full transition before:absolute before:-inset-x-2 before:-inset-y-[10px] before:content-[''] ${checked ? "bg-gold" : "bg-white/15"}`}
     >
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${checked ? "left-[22px]" : "left-0.5"}`} />
+      {/* the ::before pad makes the touch area 48px tall without changing the look */}
+      <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${checked ? "left-[22px]" : "left-0.5"}`} />
     </button>
   );
 }
@@ -53,62 +63,60 @@ export function Slider({ label, value, min, max, step, onChange, format }: {
 }) {
   return (
     <label className="block">
-      <span className="field-label flex justify-between"><span>{label}</span><span className="text-white/70">{format ? format(value) : value}</span></span>
+      <span className="field-label"><span className="flex justify-between gap-3"><span>{label}</span><span className="text-white/70">{format ? format(value) : value}</span></span></span>
       <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))} className="w-full" />
     </label>
   );
 }
 
-function useCollapsed(id: string) {
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(`directorai:collapsed:${id}`) === "1";
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(`directorai:collapsed:${id}`, collapsed ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [id, collapsed]);
-  return [collapsed, setCollapsed] as const;
+/** A panel on a page: icon, title, optional subtitle and actions */
+export function Section({ id, icon, title, subtitle, actions, children }: {
+  id: string; number?: number; icon: ReactNode; title: string; subtitle?: string; actions?: ReactNode; children: ReactNode;
+}) {
+  return (
+    <section id={id} className="scroll-mt-24 overflow-hidden rounded-2xl border border-white/10 bg-navy-800/70">
+      <div className="flex flex-wrap items-center gap-3 border-b border-white/10 px-5 py-4 sm:px-6">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gold/15 text-gold">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold text-light">{title}</h2>
+          {subtitle && <p className="text-sm text-white/50">{subtitle}</p>}
+        </div>
+        {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+      </div>
+      <div className="p-5 sm:p-6">{children}</div>
+    </section>
+  );
 }
 
-/** Full-width, collapsible section with a numbered header */
-export function Section({ id, number, icon, title, subtitle, actions, children }: {
-  id: string; number: number; icon: ReactNode; title: string; subtitle?: string; actions?: ReactNode; children: ReactNode;
-}) {
-  const [collapsed, setCollapsed] = useCollapsed(id);
+/** Page title block */
+export function PageHeader({ icon, title, subtitle, actions }: { icon: ReactNode; title: string; subtitle: string; actions?: ReactNode }) {
   return (
-    <section id={id} className="scroll-mt-20 overflow-hidden rounded-2xl border border-white/10 bg-navy-800/70">
-      <div className="flex flex-wrap items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
-        <button
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
-          onClick={() => setCollapsed(!collapsed)}
-          aria-expanded={!collapsed}
-          aria-controls={`${id}-body`}
-        >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gold/15 text-gold">{icon}</span>
-          <span className="min-w-0">
-            <span className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-gold/80">Section {number}</span>
-            <span className="block truncate text-lg font-semibold text-light">{title}</span>
-          </span>
-          {subtitle && <span className="hidden truncate text-sm text-white/45 md:block">{subtitle}</span>}
-          <ChevronDown size={18} className={`ml-auto shrink-0 text-white/50 transition ${collapsed ? "-rotate-90" : ""}`} />
-        </button>
-        {actions && !collapsed && <div className="flex flex-wrap gap-2">{actions}</div>}
+    <div className="flex flex-wrap items-center gap-4 pt-2">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gold text-navy">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <h1 className="font-display text-2xl font-bold text-gold sm:text-3xl">{title}</h1>
+        <p className="text-sm text-white/55">{subtitle}</p>
       </div>
-      {!collapsed && <div id={`${id}-body`} className="p-4 sm:p-5">{children}</div>}
-    </section>
+      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/** Friendly message when a page has nothing to show yet */
+export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-navy-900/40 px-6 py-10 text-center">
+      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-gold/10 text-gold">{icon}</span>
+      <div className="text-base font-semibold text-light">{title}</div>
+      {children && <div className="max-w-md text-sm text-white/55">{children}</div>}
+      {action}
+    </div>
   );
 }
 
 export function Card({ title, icon, children, badge, className = "" }: { title: string; icon?: ReactNode; children: ReactNode; badge?: ReactNode; className?: string }) {
   return (
-    <div className={`rounded-xl border border-white/10 bg-navy-900/60 p-4 ${className}`}>
+    <div className={`rounded-2xl border border-white/10 bg-navy-900/60 p-5 ${className}`}>
       <div className="mb-3 flex items-center gap-2">
         {icon && <span className="text-gold">{icon}</span>}
         <h3 className="text-sm font-semibold text-light">{title}</h3>

@@ -43,7 +43,7 @@ export default function SettingsModal({ open, onClose, server, onAccessCodeSaved
             <p className="text-sm text-white/50">Can't reach the server — you're offline or running without the API.</p>
           ) : (
             <ul className="space-y-1.5">
-              <Row ok={server.did} label="Photoreal lip-sync (D-ID)" />
+              <Row ok={server.heygen} label="HeyGen avatars (full body, gestures)" />
               <Row ok={server.tts} label="Free animated voice (Cloudflare Workers AI)" />
               <Row ok={server.anthropic} label="AI Assist and subtitle translation (Claude)" />
             </ul>

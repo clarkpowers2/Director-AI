@@ -40,7 +40,7 @@ export default function AdvancedTools(p: Props) {
   const main = mainDuration(project);
 
   return (
-    <Section id="advanced" number={5} icon={<Wrench size={18} />} title="Advanced Tools" subtitle="Clean audio, chapters, B-roll, translation, teleprompter">
+    <Section id="advanced" icon={<Wrench size={18} />} title="Production tools" subtitle="Each tool works on its own — use what you need">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card title="Noise reduction" icon={<AudioWaveform size={16} />}>
           <p className="mb-3 text-xs text-white/55">Removes hiss and background hum from your recording's audio or the music track.</p>

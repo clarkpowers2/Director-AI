@@ -62,12 +62,12 @@ export async function deleteMedia(id: string): Promise<void> {
 }
 
 /** Clip metadata (not the blob) so generated avatar lines survive reloads */
-export async function putClipRecord(key: string, blob: Blob, meta: { kind: string; duration: number; envelope?: number[] }) {
+export async function putClipRecord(key: string, blob: Blob, meta: { kind: string; duration: number; envelope?: number[]; alpha?: boolean; motion?: string }) {
   await putMedia(`clip:${key}`, blob);
   await putMedia(`clipmeta:${key}`, new Blob([JSON.stringify(meta)], { type: "application/json" }));
 }
 
-export async function getClipRecord(key: string): Promise<{ blob: Blob; kind: "video" | "audio"; duration: number; envelope?: number[] } | null> {
+export async function getClipRecord(key: string): Promise<{ blob: Blob; kind: "video" | "audio"; duration: number; envelope?: number[]; alpha?: boolean; motion?: string } | null> {
   const [blob, meta] = await Promise.all([getMedia(`clip:${key}`), getMedia(`clipmeta:${key}`)]);
   if (!blob || !meta) return null;
   try {

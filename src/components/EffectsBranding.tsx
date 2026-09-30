@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { Crosshair, ImagePlus, Palette, Plus, RotateCcw, Sparkles, X } from "lucide-react";
-import { Card, Field, Section, Seg, Slider, Toggle, V2 } from "./ui.tsx";
+import { EmptyState, Field, Section, Seg, Slider, Toggle, V2 } from "./ui.tsx";
 import {
   COLORED, EFFECT_COLOR, EFFECT_DURATION, EFFECT_ICON, EFFECT_LABEL, TARGETED, V2_ONLY, type TimedEffect
 } from "../lib/effects.ts";
@@ -8,15 +8,15 @@ import { formatSeconds, type Direction, type DirectionType } from "../lib/parser
 import { FONTS, targetKey, type BrandFont, type Branding, type LogoPosition, type Project } from "../lib/project.ts";
 import { readAsDataURL } from "../lib/video.ts";
 
-const PALETTE: { type: DirectionType; keyword: string; label: string; needs: string }[] = [
-  { type: "ZOOM", keyword: "ZOOM", label: "Zoom", needs: "Element to zoom on" },
-  { type: "HIGHLIGHT", keyword: "HIGHLIGHT", label: "Highlight", needs: "Element to highlight" },
-  { type: "PULSE", keyword: "PULSE", label: "Pulse", needs: "Element to pulse" },
-  { type: "POINT", keyword: "POINTS TO", label: "Pointer", needs: "Element to point at" },
-  { type: "CALLOUT", keyword: "CALLOUT", label: "Callout", needs: "Callout text" },
-  { type: "TITLE", keyword: "TITLE", label: "Title card", needs: "Title text" },
-  { type: "LOWER THIRD", keyword: "LOWER THIRD", label: "Lower third", needs: "Name | Title" },
-  { type: "TRANSITION", keyword: "TRANSITION", label: "Transition", needs: "" }
+const PALETTE: { type: DirectionType; keyword: string; label: string; needs: string; description: string }[] = [
+  { type: "ZOOM", keyword: "ZOOM", label: "Zoom", needs: "Element to zoom on", description: "Zooms to 150% on an element, holds 2 seconds, zooms back out." },
+  { type: "HIGHLIGHT", keyword: "HIGHLIGHT", label: "Highlight", needs: "Element to highlight", description: "A glowing border fades in around an element." },
+  { type: "PULSE", keyword: "PULSE", label: "Pulse glow", needs: "Element to pulse", description: "A glow radiates from an element three times." },
+  { type: "POINT", keyword: "POINTS TO", label: "Pointer", needs: "Element to point at", description: "An animated arrow bounces toward an element; the avatar points too." },
+  { type: "CALLOUT", keyword: "CALLOUT", label: "Callout", needs: "Callout text", description: "A speech bubble with a label, pointing at an element." },
+  { type: "TITLE", keyword: "TITLE", label: "Title card", needs: "Title text", description: "A full-width title band in your brand colors." },
+  { type: "LOWER THIRD", keyword: "LOWER THIRD", label: "Lower third", needs: "Name | Title", description: "A name and title strip that slides in at the bottom left." },
+  { type: "TRANSITION", keyword: "TRANSITION", label: "Transition", needs: "", description: "A fade or slide wipe between scenes." }
 ];
 
 interface Props {
@@ -32,102 +32,139 @@ interface Props {
   onColor: (d: Direction, color: string | null) => void;
   setBranding: (patch: Partial<Branding>) => void;
   languages: string[];
+  /** Video preview (click to place effects) */
+  stage: ReactNode;
+  timeline: ReactNode;
 }
 
+/** The Effects page: effect cards, preview for placing them, effect list, timeline, branding */
 export default function EffectsBranding(p: Props) {
   return (
-    <Section id="effects" number={4} icon={<Sparkles size={18} />} title="Effects & Branding" subtitle="Add effects at the playhead, place them on the video, brand everything">
-      <div className="grid gap-4 xl:grid-cols-2">
-        <EffectsPanel {...p} />
-        <BrandingPanel branding={p.project.branding} setBranding={p.setBranding} languages={p.languages} />
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
+      <Section id="effects-add" icon={<Plus size={18} />} title="Add an effect"
+        subtitle={`Adds a line to your script at the playhead (${formatSeconds(Math.max(0, p.playhead()))}). Effects that land on something — zoom, highlight, pulse, pointer, callout — then ask you to click the preview.`}>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {PALETTE.map(item => <EffectCard key={item.type} item={item} onAdd={p.onAdd} />)}
+        </div>
+      </Section>
+
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
+        <Section id="effects-preview" icon={<Crosshair size={18} />} title="Preview" subtitle="Play it back, or click and drag to place an effect">
+          {p.stage}
+        </Section>
+        <EffectsList {...p} />
       </div>
-    </Section>
+
+      <Section id="effects-timeline" icon={<Sparkles size={18} />} title="Timeline" subtitle="Where each effect lands — click a marker to jump to it">
+        {p.timeline}
+      </Section>
+
+      <Section id="branding" icon={<Palette size={18} />} title="Branding" subtitle="Colors, font, logo, intro and outro cards, captions">
+        <BrandingPanel branding={p.project.branding} setBranding={p.setBranding} languages={p.languages} />
+      </Section>
+    </div>
   );
 }
 
-function EffectsPanel(p: Props) {
-  const [choice, setChoice] = useState(PALETTE[0]);
+function EffectCard({ item, onAdd }: { item: (typeof PALETTE)[number]; onAdd: Props["onAdd"] }) {
+  const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
-  const [transition, setTransition] = useState<"fade" | "slide">("fade");
-  const needsText = choice.type !== "TRANSITION";
-
-  const add = () => {
-    const body = choice.type === "TRANSITION" ? `${transition} to next scene` : text.trim();
-    if (needsText && !body) return;
-    p.onAdd(choice.keyword, choice.type, body);
+  const targeted = TARGETED.has(item.type);
+  const add = (body: string) => {
+    if (!body.trim()) return;
+    onAdd(item.keyword, item.type, body.trim());
     setText("");
+    setOpen(false);
   };
-
   return (
-    <div className="space-y-4">
-      <Card title="Add an effect" icon={<Plus size={16} />}>
-        <div className="grid grid-cols-4 gap-1.5">
-          {PALETTE.map(item => (
-            <button key={item.type} onClick={() => setChoice(item)} aria-pressed={choice.type === item.type}
-              className={`flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 text-[11px] ${choice.type === item.type ? "border-gold bg-gold/15 text-gold" : "border-white/10 text-white/70 hover:border-white/30"}`}>
-              <span className="text-base">{EFFECT_ICON[item.type]}</span>{item.label}
+    <div className="flex flex-col rounded-2xl border border-white/10 bg-navy-900/60 p-5">
+      <div className="flex items-center gap-3">
+        <span className="flex h-12 w-12 items-center justify-center rounded-xl text-2xl" style={{ background: `${EFFECT_COLOR[item.type]}22` }}>{EFFECT_ICON[item.type]}</span>
+        <div>
+          <div className="text-base font-semibold text-light">{item.label}</div>
+          <div className="font-mono text-[11px] text-white/40">{item.keyword}:</div>
+        </div>
+      </div>
+      <p className="mt-3 flex-1 text-sm text-white/55">{item.description}</p>
+      {item.type === "TRANSITION" ? (
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button className="btn btn-gold" onClick={() => add("fade to next scene")}><Plus size={16} /> Fade</button>
+          <button className="btn btn-gold" onClick={() => add("slide to next scene")}><Plus size={16} /> Slide</button>
+        </div>
+      ) : open ? (
+        <div className="mt-4 space-y-2">
+          <input className="input" autoFocus value={text} onChange={e => setText(e.target.value)} placeholder={item.needs} aria-label={item.needs}
+            onKeyDown={e => {
+              if (e.key === "Enter") add(text);
+              if (e.key === "Escape") setOpen(false);
+            }} />
+          <div className="grid grid-cols-2 gap-2">
+            <button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+            <button className="btn btn-gold" onClick={() => add(text)} disabled={!text.trim()}>
+              {targeted ? <><Crosshair size={16} /> Place</> : <><Plus size={16} /> Add</>}
             </button>
-          ))}
+          </div>
         </div>
-        <div className="mt-3 flex gap-2">
-          {needsText ? (
-            <input className="input" value={text} onChange={e => setText(e.target.value)} placeholder={choice.needs} aria-label={choice.needs}
-              onKeyDown={e => e.key === "Enter" && add()} />
-          ) : (
-            <Seg value={transition} onChange={setTransition} label="Transition style" options={[{ id: "fade", label: "Fade" }, { id: "slide", label: "Slide" }]} />
-          )}
-          <button className="btn btn-gold shrink-0" onClick={add} disabled={needsText && !text.trim()}>
-            {TARGETED.has(choice.type) ? <><Crosshair size={14} /> Place</> : <><Plus size={14} /> Add</>}
-          </button>
-        </div>
-        <p className="mt-2 text-[11px] text-white/40">
-          Adds a line to the script at the playhead ({formatSeconds(Math.max(0, p.playhead()))}).
-          {TARGETED.has(choice.type) ? " Then click or drag on the preview where it should land." : ""}
-        </p>
-      </Card>
+      ) : (
+        <button className="btn btn-gold mt-4 w-full" onClick={() => setOpen(true)} aria-label={`Add ${item.label}`}><Plus size={16} /> ADD</button>
+      )}
+    </div>
+  );
+}
 
-      <Card title={`Effects in this video (${p.effects.length})`} icon={<Sparkles size={16} />}>
-        {p.effects.length === 0 && <p className="text-sm text-white/40">Effects from your script appear here.</p>}
-        <ul className="max-h-80 space-y-1.5 overflow-auto pr-1">
+function EffectsList(p: Props) {
+  return (
+    <Section id="effects-list" icon={<Sparkles size={18} />} title={`Effects in this video (${p.effects.length})`}>
+      {p.effects.length === 0 ? (
+        <EmptyState icon={<Sparkles size={20} />} title="No effects yet">Add one with the cards above, or write it into the script, e.g. <code className="text-gold">ZOOM: dashboard</code>.</EmptyState>
+      ) : (
+        <ul className="max-h-[520px] space-y-2 overflow-auto pr-1">
           {p.effects.map(e => {
             const d = e.direction;
             const placed = TARGETED.has(d.type) && !!p.project.targets[targetKey(d)];
             return (
-              <li key={d.id} className={`flex items-center gap-2 rounded-lg border p-2 text-sm ${p.selectedId === d.id ? "border-gold bg-gold/10" : "border-white/10"}`}>
-                <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => p.onSelect(d)}>
-                  <span>{EFFECT_ICON[d.type]}</span>
-                  <span className="font-mono text-[11px] text-white/45">{formatSeconds(p.intro + e.start)}</span>
-                  <span className="shrink-0 text-xs font-semibold" style={{ color: EFFECT_COLOR[d.type] }}>{EFFECT_LABEL[d.type]}</span>
+              <li key={d.id} className={`rounded-xl border p-3 text-sm ${p.selectedId === d.id ? "border-gold bg-gold/10" : "border-white/10"}`}>
+                <button className="flex w-full min-w-0 items-center gap-2 text-left" onClick={() => p.onSelect(d)}>
+                  <span className="text-lg">{EFFECT_ICON[d.type]}</span>
+                  <span className="font-mono text-xs text-white/45">{formatSeconds(p.intro + e.start)}</span>
+                  <span className="shrink-0 font-semibold" style={{ color: EFFECT_COLOR[d.type] }}>{EFFECT_LABEL[d.type]}</span>
                   <span className="truncate text-white/80">{d.text}</span>
-                  {V2_ONLY.has(d.type) && <V2>v2</V2>}
+                  {V2_ONLY.has(d.type) && <V2>avatar gesture</V2>}
                 </button>
-                {EFFECT_DURATION[d.type] > 0 && <span className="hidden text-[10px] text-white/35 sm:inline">{EFFECT_DURATION[d.type]}s</span>}
-                {COLORED.has(d.type) && (
-                  <input type="color" aria-label={`${EFFECT_LABEL[d.type]} color`} title="Effect color"
-                    value={e.color ?? p.project.branding.accent} onChange={ev => p.onColor(d, ev.target.value)} className="h-6 w-7 shrink-0" />
-                )}
-                {TARGETED.has(d.type) && (
-                  <>
-                    <button className={`btn !px-2 !py-1 text-xs ${placed ? "btn-ghost" : "btn-navy"}`} onClick={() => p.onPlace(d)}>
-                      <Crosshair size={12} /> {placed ? "Move" : "Place"}
-                    </button>
-                    {placed && <button className="btn btn-ghost !px-1.5 !py-1" onClick={() => p.onResetTarget(d)} aria-label="Reset placement"><RotateCcw size={12} /></button>}
-                  </>
+                {(COLORED.has(d.type) || TARGETED.has(d.type)) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {EFFECT_DURATION[d.type] > 0 && <span className="text-xs text-white/40">{EFFECT_DURATION[d.type]}s</span>}
+                    {COLORED.has(d.type) && (
+                      <label className="flex items-center gap-2 text-xs text-white/60">
+                        Color
+                        <input type="color" aria-label={`${EFFECT_LABEL[d.type]} color`} value={e.color ?? p.project.branding.accent}
+                          onChange={ev => p.onColor(d, ev.target.value)} className="h-10 w-12" />
+                      </label>
+                    )}
+                    {TARGETED.has(d.type) && (
+                      <div className="ml-auto flex gap-2">
+                        <button className={`btn text-xs ${placed ? "btn-ghost" : "btn-navy"}`} onClick={() => p.onPlace(d)}>
+                          <Crosshair size={14} /> {placed ? "Move" : "Place"}
+                        </button>
+                        {placed && <button className="btn btn-ghost" onClick={() => p.onResetTarget(d)} aria-label="Reset placement"><RotateCcw size={14} /></button>}
+                      </div>
+                    )}
+                  </div>
                 )}
               </li>
             );
           })}
         </ul>
-        <p className="mt-2 text-[11px] text-white/40">Effects that name the same element share one placement and color.</p>
-      </Card>
-    </div>
+      )}
+      <p className="mt-3 text-xs text-white/40">Effects that name the same element share one placement and color.</p>
+    </Section>
   );
 }
 
 function Group({ title, on, onToggle, children }: { title: string; on?: boolean; onToggle?: (v: boolean) => void; children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-white/10 p-3">
-      <div className="mb-2 flex items-center justify-between">
+    <div className="rounded-2xl border border-white/10 bg-navy-900/60 p-4">
+      <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-semibold text-white/85">{title}</span>
         {onToggle && <Toggle checked={!!on} onChange={onToggle} label={title} />}
       </div>
@@ -142,8 +179,8 @@ function BrandingPanel({ branding: b, setBranding, languages }: { branding: Bran
     if (f && /^image\/(png|svg\+xml|jpeg|webp)$/.test(f.type)) setBranding({ logo: await readAsDataURL(f) });
   };
   return (
-    <Card title="Branding" icon={<Palette size={16} />}>
-      <div className="space-y-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-2">
+      <div className="space-y-4">
         <div className="grid grid-cols-[auto_auto_1fr] items-end gap-3">
           <label><span className="field-label">Primary</span><input type="color" value={b.primary} onChange={e => setBranding({ primary: e.target.value })} className="h-[38px] w-12" /></label>
           <label><span className="field-label">Accent</span><input type="color" value={b.accent} onChange={e => setBranding({ accent: e.target.value })} className="h-[38px] w-12" /></label>
@@ -178,6 +215,8 @@ function BrandingPanel({ branding: b, setBranding, languages }: { branding: Bran
           <Slider label="Duration" value={b.intro.duration} min={1} max={10} step={0.5} format={v => `${v}s`} onChange={v => setBranding({ intro: { ...b.intro, duration: v } })} />
         </Group>
 
+      </div>
+      <div className="space-y-4">
         <Group title="Outro card" on={b.outro.enabled} onToggle={v => setBranding({ outro: { ...b.outro, enabled: v } })}>
           <input className="input" value={b.outro.cta} onChange={e => setBranding({ outro: { ...b.outro, cta: e.target.value } })} placeholder="Call to action" aria-label="Outro call to action" />
           <input className="input" value={b.outro.url} onChange={e => setBranding({ outro: { ...b.outro, url: e.target.value } })} placeholder="haven-mos.org" aria-label="Outro URL" />
@@ -199,6 +238,6 @@ function BrandingPanel({ branding: b, setBranding, languages }: { branding: Bran
           <p className="text-[11px] text-white/40">Translate captions under Advanced Tools.</p>
         </Group>
       </div>
-    </Card>
+    </div>
   );
 }

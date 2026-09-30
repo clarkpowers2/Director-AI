@@ -21,10 +21,25 @@ The project autosaves every 30 seconds. Settings go to localStorage; videos, mus
 
 | Engine | What you get | Needs |
 |---|---|---|
-| Photoreal lip-sync (D-ID) | The photo lip-syncs every word with natural head movement; tone uses Microsoft speaking styles | `DID_API_KEY`, D-ID credits |
-| Animated (free) | Cloudflare Workers AI voice (Deepgram Aura); the photo breathes when idle and moves with the loudness of the speech. No lip movement. | Workers AI binding (on by default) |
+| HeyGen | A lifelike presenter per voiceover line: lip-sync, natural movement, full-body or upper-body avatars from HeyGen's library, or a photo avatar made from your own photo | `HEYGEN_API_KEY`, HeyGen credits (a few minutes' render time per line) |
+| Animated (free) | Cloudflare Workers AI voice (Deepgram Aura); your photo breathes when idle and moves with the loudness of the speech. No lip-sync. | Workers AI binding (on by default) |
 
-In both engines, the avatar reacts to the script: it leans toward POINTS TO / ZOOM / CALLOUT targets (with a pointing beam for POINTS TO) and steps aside for TITLE cards. Real arm gestures need a full-body avatar platform and are planned for v2.
+### HeyGen details
+
+- **API:** HeyGen v3. `POST /v3/videos` creates a clip and `GET /v3/videos/{id}` polls it; the gallery comes from `GET /v3/avatars/looks` and voices from `GET /v3/voices`. "Create from my photo" uses `POST /v3/assets` then `POST /v3/avatars` (type `photo`).
+- **Transparent presenters:** clips are requested as `output_format: "webm"` (alpha channel). HeyGen only allows that for avatars trained with matting (new digital twins, most photo avatars). Studio avatars with a fixed background fall back to MP4 automatically and appear in a framed card. The studio crops a cut-out to the presenter's visible pixels and stands it on the bottom edge (left / right / bottom center; 25% / 33% / 50% of screen width). VP9 transparency plays in Chrome, Edge and Firefox; Safari shows a black box.
+- **Avatar library cache:** HeyGen lists ~10,000 avatar looks (~200 pages) and ~3,000 voices. `/api/avatar/catalog` caches both in Cloudflare KV (binding `CATALOG`) for 24 hours. The first build runs in steps of 40 pages (Functions have a subrequest limit) while the studio shows indexing progress; after that, stale copies are served while a refresh runs in the background. Search and filtering happen server-side over the whole library.
+- **Gallery tabs** follow HeyGen's `avatar_type`: **Full Body** (studio avatars filmed standing: "Standing"/"Walking"/"Full Body" in the name; wide knee-up shots, since HeyGen's stock library has no head-to-toe presenters), **Studio**, **Digital Twin**, **Talking Head** (photo avatars), and **My avatars** (live).
+- **Voice picker:** search by name or language, gender and language filters, 3-second previews from HeyGen's sample audio. Defaults to "Victor" (English, male); "Avatar's own default voice" is also an option.
+- **Gestures:** HeyGen takes one `motion_prompt` per clip. It can't time a gesture to a word, but the studio renders one clip per voiceover line, so each line gets the gestures its scene calls for:
+  - POINTS TO: points toward the element (direction worked out from where you placed it and which side the avatar is on)
+  - ZOOM, CALLOUT, HIGHLIGHT: looks and gestures toward it
+  - TITLE: steps back with a sweeping gesture
+  - A new timestamped scene: turns to camera
+  - GESTURE and stage directions ("Victor walks in"): passed through as written
+
+  The Presenter, Teacher, Anchor and Casual styles set the base motion and expressiveness. Gesture prompts only work on **photo avatars** and on **video avatars that support the Avatar V engine** (✋ badge); other avatars move naturally but ignore direction. The server drops the prompt rather than failing the line.
+- **Out-of-date gestures:** a clip's cache key is avatar + voice + text. Moving an effect target doesn't silently re-bill HeyGen; instead the studio shows "Update gestures (N)" to re-render just those lines.
 
 ## Architecture
 
@@ -33,7 +48,8 @@ In both engines, the avatar reacts to the script: it leans toward POINTS TO / ZO
 - `src/lib/player.ts`: the clock that syncs base video, cleaned audio, music, avatar lines and B-roll.
 - `src/lib/export.ts`, `video.ts`, `audio.ts`: MediaRecorder export; ffmpeg.wasm (from jsDelivr, loaded on first use) for MP4 finishing, MP3 mixing and noise reduction.
 - `src/lib/storage.ts`: autosave and IndexedDB media.
-- `functions/api/*`: Cloudflare Pages Functions. The D-ID proxy, `/api/tts` (Workers AI), `/api/assist` and `/api/translate` (Claude, `claude-sonnet-4-6`). Every route except `/api/status` requires the studio access code.
+- `src/lib/gestures.ts`: turns scene directions into a HeyGen motion prompt per line.
+- `functions/api/*`: Cloudflare Pages Functions. HeyGen (`/api/avatar/looks`, `voices`, `photo`, `videos`, `media`), `/api/tts` (Workers AI), `/api/assist` and `/api/translate` (Claude, `claude-sonnet-4-6`). Every route except `/api/status` requires the studio access code.
 
 API keys never reach the browser. They're Cloudflare secrets used only by the Functions.
 
@@ -55,11 +71,14 @@ npm run check                    # type-check + parser tests
 npm run deploy                   # build + deploy to Cloudflare Pages (directorai-web)
 ```
 
-Secrets: `npx wrangler pages secret put DID_API_KEY | ANTHROPIC_API_KEY | APP_ACCESS_CODE --project-name directorai-web`.
+Secrets (set per environment; add `--env preview` for preview deployments):
+`npx wrangler pages secret put HEYGEN_API_KEY | ANTHROPIC_API_KEY | APP_ACCESS_CODE --project-name directorai-web`.
+
+Preview first: `npm run build && npx wrangler pages deploy dist --project-name directorai-web --branch preview` → https://preview.directorai-web.pages.dev
 
 ## Coming in v2
 
-- Real arm/body gestures (needs a full-body avatar provider)
+- Word-level gesture timing (HeyGen's API takes one motion prompt per clip)
 - Custom voice cloning from uploaded audio
 - Background remover for the presenter photo
 - Green screen replacement (WebGL)

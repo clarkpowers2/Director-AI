@@ -2,9 +2,18 @@
 
 export interface Env {
   AI?: Ai;
-  DID_API_KEY?: string;
+  CATALOG?: KVNamespace;
+  HEYGEN_API_KEY?: string;
+  /** Local testing only: point HeyGen calls at a mock server */
+  HEYGEN_API_BASE?: string;
   ANTHROPIC_API_KEY?: string;
   APP_ACCESS_CODE?: string;
+  /** Avatar renderer priority, e.g. "heygen,mock" (default: heygen, then mock) */
+  AVATAR_PROVIDERS?: string;
+  /** Temporary second access code for developer diagnostics (unset when not debugging) */
+  DIAG_ACCESS_CODE?: string;
+  /** "1" enables the mock renderer (local testing) */
+  AVATAR_MOCK?: string;
 }
 
 export function json(body: unknown, status = 200): Response {
@@ -23,32 +32,105 @@ export function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-const DID_BASE = "https://api.d-id.com";
+export interface HeyGenResult<T> { ok: true; status: number; data: T; raw: Record<string, unknown> }
+export interface HeyGenFailure {
+  ok: false;
+  /** Ready-to-return JSON: { error, kind, detail } */
+  response: Response;
+  code: string;
+  message: string;
+  detail: ProviderErrorDetail;
+}
 
-export async function didFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
-  if (!env.DID_API_KEY) return json({ error: "D-ID is not configured on the server (DID_API_KEY missing)." }, 503);
-  const res = await fetch(`${DID_BASE}${path}`, {
-    ...init,
-    headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Basic ${env.DID_API_KEY}`, Accept: "application/json" }
-  });
-  const text = await res.text();
-  let body: unknown;
+/** Failure category the studio acts on: quota and rate_limit stop the batch; nothing is retried automatically */
+export type ProviderErrorKind = "quota" | "rate_limit" | "auth" | "invalid" | "not_found" | "provider" | "network" | "not_configured";
+
+/** Safe to return and log: never contains credentials, headers or tokens */
+export interface ProviderErrorDetail {
+  provider: string;
+  /** Provider endpoint, e.g. "POST /v3/videos" (ids and query strings removed) */
+  endpoint: string;
+  http: number;
+  code: string;
+  message: string;
+  kind: ProviderErrorKind;
+  retryAfter?: number;
+}
+
+/** Strip anything credential-like from provider text before it's logged or shown */
+export function sanitize(text: string, env: Env): string {
+  let t = String(text ?? "");
+  if (env.HEYGEN_API_KEY) t = t.split(env.HEYGEN_API_KEY).join("[redacted]");
+  return t
+    .replace(/(bearer|basic)\s+[\w.~+/=-]+/gi, "$1 [redacted]")
+    .replace(/((?:x-)?api[_-]?key|token|secret|authorization|signature)(["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi, "$1$2[redacted]")
+    .replace(/https?:\/\/\S+/g, "[url]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+const endpointOf = (method: string, path: string) =>
+  `${method} ${path.split("?")[0].replace(/\/(?=[\w-]*\d)[\w-]{8,}(?=\/|$)/g, "/{id}")}`;
+
+export function errorKind(http: number, detail: string): ProviderErrorKind {
+  if (http === 402 || /credit|quota|insufficient|balance|payment|billing|exceed.*limit/.test(detail)) return "quota";
+  if (http === 429 || /rate.?limit|too many requests/.test(detail)) return "rate_limit";
+  if (http === 401 || http === 403) return "auth";
+  if (http === 404) return "not_found";
+  if (http === 400 || http === 422) return "invalid";
+  if (http === 0) return "network";
+  return "provider";
+}
+
+/**
+ * Call HeyGen's v3 API. Failures come back as a ready-to-return Response with a
+ * plain-English message and a sanitized detail (HTTP status, HeyGen's code and
+ * message), plus the raw code/message for callers that branch on them.
+ */
+export async function heygen<T>(env: Env, path: string, init: RequestInit = {}): Promise<HeyGenResult<T> | HeyGenFailure> {
+  const endpoint = endpointOf(init.method ?? "GET", path);
+  const failure = (http: number, code: string, message: string, text: string, status: number, retryAfter?: number): HeyGenFailure => {
+    const kind = code === "not_configured" ? "not_configured" : errorKind(http, `${code} ${message}`.toLowerCase());
+    const detail: ProviderErrorDetail = { provider: "heygen", endpoint, http, code: sanitize(code, env).slice(0, 80), message: sanitize(message, env), kind, retryAfter };
+    // Server-side only (wrangler tail) — safe fields, never the key or headers
+    console.warn(JSON.stringify({ event: "provider_error", ...detail }));
+    return { ok: false, code, message, detail, response: json({ error: text, kind, detail }, status) };
+  };
+  if (!env.HEYGEN_API_KEY) return failure(0, "not_configured", "", "The avatar renderer isn't set up on the server yet.", 503);
+  let res: Response;
   try {
-    body = JSON.parse(text);
+    res = await fetch(`${env.HEYGEN_API_BASE || "https://api.heygen.com"}${path}`, {
+      ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), "X-Api-Key": env.HEYGEN_API_KEY, Accept: "application/json" }
+    });
   } catch {
-    body = { error: text.slice(0, 300) };
+    return failure(0, "network", "", "Couldn't reach the avatar provider. Try again shortly.", 502);
   }
-  if (!res.ok) {
-    const b = body as { description?: string; message?: string; kind?: string };
-    const detail = `${b.kind ?? ""} ${b.description ?? b.message ?? ""}`.toLowerCase();
-    let message = friendly("D-ID", res.status);
-    if (/face/.test(detail)) message = "D-ID couldn't find a clear face in that photo. Use a front-facing photo of one person.";
-    else if (/file name|filename|format|image/.test(detail) && res.status === 400) message = "D-ID couldn't read that photo. Try a JPG or PNG.";
-    else if (/credit|insufficient/.test(detail)) message = "Your D-ID account is out of credits.";
-    else if (/moderat|celebrity|inappropriate/.test(detail)) message = "D-ID's content rules rejected this photo or text.";
-    return json({ error: message }, res.status >= 500 ? 502 : res.status);
-  }
-  return json(body);
+  const body = (await res.json().catch(() => ({}))) as {
+    data?: T; error?: { code?: string; message?: string } | string; code?: string | number; message?: string;
+  };
+  if (res.ok) return { ok: true, status: res.status, data: (body.data ?? body) as T, raw: body as Record<string, unknown> };
+
+  // v3 errors: { error: { code, message, param } } — older shapes: { code, message } or { error: "text" }
+  const err = typeof body.error === "object" && body.error ? body.error
+    : { code: body.code !== undefined ? String(body.code) : undefined, message: typeof body.error === "string" ? body.error : body.message };
+  const code = err.code ?? "";
+  const message = err.message ?? "";
+  const retryAfter = Number(res.headers.get("Retry-After")) || undefined;
+  const detail = `${code} ${message}`.toLowerCase();
+  const kind = errorKind(res.status, detail);
+  let text = friendly("The avatar provider", res.status);
+  if (kind === "quota") text = "The avatar provider account is out of credits or API balance. Nothing will be retried automatically.";
+  else if (kind === "rate_limit") text = `The avatar provider is rate-limiting requests.${retryAfter ? ` Wait ${retryAfter} seconds,` : " Wait a minute,"} then retry.`;
+  else if (res.status === 403) text = "The avatar provider refused access. The API key may not have permission or plan access for this feature.";
+  else if (/moderation/.test(detail)) text = "The avatar provider's content rules rejected this photo or text.";
+  else if (/matting|webm/.test(detail)) text = "This avatar can't have a transparent background.";
+  else if (/not_ready|still processing/.test(detail)) text = "This avatar is still being created. Try again in a minute.";
+  else if (/motion_prompt/.test(detail)) text = "This avatar doesn't support gesture direction.";
+  else if (/face|image|photo/.test(detail) && res.status === 400) text = "The avatar provider couldn't use that photo. Use a clear, front-facing portrait of one person.";
+  else if (kind === "invalid" && message) text = `The avatar provider rejected the request: ${sanitize(message, env)}`;
+  return failure(res.status, code, message, text, res.status >= 500 ? 502 : res.status, retryAfter);
 }
 
 /** Plain-English message for any upstream failure — never forward raw API errors */

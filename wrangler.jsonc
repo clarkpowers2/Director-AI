@@ -3,10 +3,12 @@
   "name": "directorai-web",
   "pages_build_output_dir": "./dist",
   "compatibility_date": "2026-09-01",
-  // Workers AI — free text-to-speech for the avatar voice when D-ID isn't used
-  "ai": { "binding": "AI" }
+  // Workers AI — free text-to-speech for the avatar voice when HeyGen isn't used
+  "ai": { "binding": "AI" },
+  // Daily cache of HeyGen's full avatar and voice catalogs (thousands of entries)
+  "kv_namespaces": [{ "binding": "CATALOG", "id": "30d316dfb1b4492a9989567f5ef64026" }]
   // Secrets (set with `npx wrangler pages secret put <NAME> --project-name directorai-web`):
-  //   DID_API_KEY        D-ID API key, used by /api/avatar/*
+  //   HEYGEN_API_KEY     HeyGen API key, used by /api/avatar/*
   //   ANTHROPIC_API_KEY  Anthropic API key, used by /api/assist
   //   APP_ACCESS_CODE    Studio access code the app sends with every /api call
 }

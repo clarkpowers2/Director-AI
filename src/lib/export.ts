@@ -5,8 +5,8 @@
 import { EFFECT_DURATION, TARGETED, timedEffects } from "./effects.ts";
 import { formatSeconds } from "./parser.ts";
 import { Player } from "./player.ts";
-import { emptyMedia, renderFrame } from "./render.ts";
-import { sceneClipKey, speechDuration, SPEED_RATE, targetKey, type RenderState } from "./project.ts";
+import { emptyMedia, renderFrame, videoFrame } from "./render.ts";
+import { sceneClipKey, speechSchedule, SPEED_RATE, targetKey, type RenderState } from "./project.ts";
 import { createAudio, createVideo, loadImage, mixClipsToMp3, toMp4, videoReady } from "./video.ts";
 
 export type Resolution = "720p" | "1080p" | "4k";
@@ -157,6 +157,9 @@ export async function exportVideo(
   const videos = [media.base, ...media.broll.values(), ...[...media.clips.values()].filter(e => e instanceof HTMLVideoElement)]
     .filter((v): v is HTMLVideoElement => v instanceof HTMLVideoElement);
   await Promise.all(videos.map(videoReady));
+  // Decode a first frame of every avatar clip before recording, so the avatar is
+  // never missing while a clip's decoder spins up (transparent VP9 decodes in software)
+  await Promise.all([...media.clips.values()].filter((v): v is HTMLVideoElement => v instanceof HTMLVideoElement).map(primeFrame));
   await document.fonts.load(`700 40px "${state.project.branding.font}"`).catch(() => {});
 
   const effects = timedEffects(state.parse, state.project.targets, state.project.effectStyles);
@@ -229,17 +232,29 @@ async function convert(recorded: Blob, ext: string, mode: "remux" | "transcode",
   }
 }
 
+function primeFrame(v: HTMLVideoElement): Promise<void> {
+  return new Promise(resolve => {
+    const done = () => {
+      videoFrame(v); // keep this frame as the clip's fallback
+      resolve();
+    };
+    const timer = setTimeout(done, 4000);
+    v.addEventListener("seeked", () => {
+      clearTimeout(timer);
+      if (v.readyState >= 2) done();
+      else v.addEventListener("loadeddata", done, { once: true });
+    }, { once: true });
+    v.currentTime = 0.05;
+  });
+}
+
 /** Avatar voiceover lines mixed at their timestamps (at the chosen voice speed) into one MP3 */
 export async function exportAudio(state: RenderState, cb: ExportCallbacks): Promise<Blob> {
   cb.onStatus("Mixing avatar audio...");
-  const { avatar, voice } = state.project;
-  const clips = (state.parse?.scenes ?? []).flatMap(scene => {
-    const key = sceneClipKey(avatar, voice, scene.spoken);
-    const clip = key ? state.clips[key] : undefined;
-    return clip?.status === "done" && clip.blob && scene.start !== null
-      ? [{ blob: clip.blob, start: state.timing.intro + scene.start }]
-      : [];
-  });
+  const { voice } = state.project;
+  const clips = speechSchedule(state.parse, state.project, state.clips).flatMap(({ clip, start }) =>
+    clip?.status === "done" && clip.blob ? [{ blob: clip.blob, start: state.timing.intro + start }] : []
+  );
   if (clips.length === 0) throw new ExportError("Generate the avatar voice first — there's no voiceover audio yet.");
   try {
     return await mixClipsToMp3(clips, state.timing.total, SPEED_RATE[voice.speed], p => cb.onProgress(p));
@@ -256,14 +271,12 @@ function srtTime(seconds: number): string {
 
 /** SRT in the captions language (original or a translation) */
 export function buildSrt(state: RenderState): string {
-  const { avatar, voice, translations, branding } = state.project;
+  const { translations, branding } = state.project;
   const lang = branding.captions.language;
-  const rate = SPEED_RATE[voice.speed];
-  const entries = (state.parse?.scenes ?? []).filter(s => s.spoken && s.start !== null);
-  return entries.map((scene, i) => {
-    const start = state.timing.intro + (scene.start as number);
-    const key = sceneClipKey(avatar, voice, scene.spoken);
-    const length = speechDuration(scene, key ? state.clips[key] : undefined, rate);
+  return speechSchedule(state.parse, state.project, state.clips).map((slot, i) => {
+    const scene = state.parse!.scenes[slot.sceneIndex];
+    const start = state.timing.intro + slot.start;
+    const length = slot.length;
     const text = lang !== "original" ? translations[lang]?.[scene.spoken] ?? scene.spoken : scene.spoken;
     return `${i + 1}\n${srtTime(start)} --> ${srtTime(start + length)}\n${text}\n`;
   }).join("\n");

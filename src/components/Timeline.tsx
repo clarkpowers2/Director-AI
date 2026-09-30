@@ -3,7 +3,7 @@ import type { Player } from "../lib/player.ts";
 import { usePlayerTime } from "./VideoPreview.tsx";
 import { EFFECT_COLOR, EFFECT_ICON, EFFECT_LABEL, V2_ONLY, type TimedEffect } from "../lib/effects.ts";
 import { formatSeconds, type Direction, type ParseResult } from "../lib/parser.ts";
-import { sceneClipKey, speechDuration, SPEED_RATE, type AvatarClip, type Project, type ProgramTiming } from "../lib/project.ts";
+import { speechSchedule, type AvatarClip, type Project, type ProgramTiming } from "../lib/project.ts";
 import type { Chapter } from "../lib/chapters.ts";
 
 interface Props {
@@ -22,7 +22,8 @@ const CLIP_STYLE: Record<string, string> = {
   done: "bg-gold/70 border-gold",
   generating: "bg-sky-400/40 border-sky-300 animate-pulse",
   queued: "bg-white/15 border-white/30",
-  error: "bg-red-500/40 border-red-400"
+  error: "bg-red-500/40 border-red-400",
+  cancelled: "bg-white/10 border-white/20"
 };
 
 export default function Timeline(p: Props) {
@@ -31,7 +32,6 @@ export default function Timeline(p: Props) {
   const total = Math.max(p.timing.total, 0.001);
   const pct = (s: number) => `${(Math.max(0, Math.min(total, s)) / total) * 100}%`;
   const main = (s: number) => p.timing.intro + s;
-  const rate = SPEED_RATE[p.project.voice.speed];
 
   const seekFrom = (clientX: number) => {
     const r = barRef.current!.getBoundingClientRect();
@@ -80,13 +80,14 @@ export default function Timeline(p: Props) {
         <div className="relative h-9 overflow-hidden rounded-md bg-navy">
           {p.timing.intro > 0 && <div className="absolute inset-y-0 flex items-center justify-center bg-gold/15 text-[10px] text-gold" style={{ left: 0, width: pct(p.timing.intro) }}>Intro</div>}
           {p.timing.outro > 0 && <div className="absolute inset-y-0 flex items-center justify-center bg-gold/15 text-[10px] text-gold" style={{ left: pct(main(p.timing.main)), width: pct(p.timing.outro) }}>Outro</div>}
-          {p.parse?.scenes.filter(s => s.spoken && s.start !== null).map(s => {
-            const key = sceneClipKey(p.project.avatar, p.project.voice, s.spoken);
-            const clip = key ? p.clips[key] : undefined;
+          {speechSchedule(p.parse, p.project, p.clips).map(slot => {
+            const s = p.parse!.scenes[slot.sceneIndex];
+            const clip = slot.clip;
+            const shifted = slot.start - slot.scripted > 0.05;
             return (
-              <div key={s.index} title={`${s.spoken}${clip ? ` — avatar ${clip.status}` : ""}`}
-                className={`absolute top-1 h-3.5 overflow-hidden rounded border px-1 text-[9px] leading-3 text-white/90 ${clip ? CLIP_STYLE[clip.status] : "border-white/20 bg-white/10"}`}
-                style={{ left: pct(main(s.start as number)), width: pct(Math.max(0.3, speechDuration(s, clip, rate))) }}>
+              <div key={s.index} title={`${s.spoken}${clip ? ` — avatar ${clip.status}` : ""}${shifted ? ` — starts ${(slot.start - slot.scripted).toFixed(1)}s late so the line before isn't cut` : ""}`}
+                className={`absolute top-1 h-3.5 overflow-hidden rounded border px-1 text-[9px] leading-3 text-white/90 ${clip ? CLIP_STYLE[clip.status] : "border-white/20 bg-white/10"} ${shifted ? "border-dashed" : ""}`}
+                style={{ left: pct(main(slot.start)), width: pct(Math.max(0.3, slot.length)) }}>
                 {s.spoken}
               </div>
             );
@@ -103,7 +104,7 @@ export default function Timeline(p: Props) {
         <div className="relative mt-1 h-9">
           {p.effects.map(e => (
             <button key={e.direction.id} data-pin
-              title={`${formatSeconds(main(e.start))} ${EFFECT_LABEL[e.direction.type]}: ${e.direction.text}${V2_ONLY.has(e.direction.type) ? " (v2)" : ""}`}
+              title={`${formatSeconds(main(e.start))} ${EFFECT_LABEL[e.direction.type]}: ${e.direction.text}${V2_ONLY.has(e.direction.type) ? " (avatar gesture)" : ""}`}
               onClick={() => {
                 p.player.seek(main(e.start));
                 p.onSelect(e.direction);

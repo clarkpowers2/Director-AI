@@ -42,7 +42,7 @@ export const EFFECT_LABEL: Record<DirectionType, string> = {
 export const TARGETED = new Set<DirectionType>(["ZOOM", "HIGHLIGHT", "PULSE", "POINT", "CALLOUT"]);
 /** Effects with a color option */
 export const COLORED = new Set<DirectionType>(["HIGHLIGHT", "PULSE", "POINT", "CALLOUT"]);
-/** Directions the avatar can't act out yet (D-ID animates a photo; no body gestures) */
+/** Avatar directions: acted out by HeyGen avatars that take gesture prompts; otherwise timeline-only */
 export const V2_ONLY = new Set<DirectionType>(["GESTURE", "AVATAR", "ACTION"]);
 
 export interface TimedEffect {

@@ -63,7 +63,6 @@ export default function VideoPreview(p: Props) {
     let raf = 0;
     const loop = () => {
       const { player, media, getState, effects, showTargets, placement, selectedId } = live.current;
-      player.tick();
       renderFrame(ctx, W, H, player.t, getState(), media, effects, { editTargets: showTargets || !!placement, selectedDirectionId: selectedId });
       const d = draftRef.current;
       if (d) {

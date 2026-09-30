@@ -9,7 +9,8 @@
     "test": "node src/lib/parser.test.ts",
     "check": "tsc -b && node src/lib/parser.test.ts",
     "preview": "npm run build && wrangler pages dev dist",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name directorai-web"
+    "deploy": "npm run build && wrangler pages deploy dist --project-name directorai-web",
+    "test:provider": "node tests/provider-integration.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

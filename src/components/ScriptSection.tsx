@@ -28,25 +28,26 @@ interface Props {
   onSeek: (t: number) => void;
   avatarName: string;
   setAvatarName: (s: string) => void;
+  finding: boolean;
+  setFinding: (v: boolean) => void;
 }
 
 export default function ScriptSection(p: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [view, setView] = useState<"script" | "scenes">("script");
-  const [finding, setFinding] = useState(false);
+  const { finding, setFinding } = p;
   const [parsedFlash, setParsedFlash] = useState(false);
 
   return (
     <Section
       id="script"
-      number={1}
       icon={<Clapperboard size={18} />}
-      title="Script Editor"
+      title="Director's script"
       subtitle="Write what the presenter says and does — it parses as you type"
       actions={
         <>
           {p.canUndo && <button className="btn btn-ghost !py-1.5 text-xs" onClick={p.onUndo}><Undo2 size={14} /> Undo AI</button>}
-          <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => setFinding(f => !f)} aria-pressed={finding}><Search size={14} /> Find & replace</button>
+          <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => setFinding(!finding)} aria-pressed={finding}><Search size={14} /> Find & replace</button>
           <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => void p.onAssist()} disabled={p.assistBusy || !p.script.trim()} title="Claude rewrites rough notes into director's script syntax and fixes formatting">
             {p.assistBusy ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} AI Assist
           </button>

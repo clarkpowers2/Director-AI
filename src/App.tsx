@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, X } from "lucide-react";
-import Header from "./components/Header.tsx";
+import { AlertCircle, Clapperboard, Sparkles, X } from "lucide-react";
+import Header, { MobileTabs, PAGES } from "./components/Header.tsx";
+import ToolSidebar from "./components/ToolSidebar.tsx";
+import AudioPage from "./components/AudioPage.tsx";
+import AiPrompter, { type PrompterMessage } from "./components/AiPrompter.tsx";
+import VideoPreview from "./components/VideoPreview.tsx";
+import Timeline from "./components/Timeline.tsx";
+import { EmptyState, PageHeader } from "./components/ui.tsx";
+import { applyEdits, buildContext, type CommandEdits, type PageId } from "./lib/command.ts";
 import SettingsModal from "./components/SettingsModal.tsx";
 import ScriptSection from "./components/ScriptSection.tsx";
 import AvatarStudio from "./components/AvatarStudio.tsx";
@@ -17,11 +24,20 @@ import { emptyMedia } from "./lib/render.ts";
 import { buildChapters } from "./lib/chapters.ts";
 import { insertDirection, replaceSpoken } from "./lib/scriptEdit.ts";
 import {
-  MAX_VIDEO_SECONDS, currentPhoto, defaultProject, mainDuration, photoKey, programTiming, sceneClipKey, targetKey,
-  type AvatarClip, type AvatarSettings, type Branding, type BrollClip, type Project, type RenderState, type TargetRect,
+  MAX_VIDEO_SECONDS, SPEED_RATE, currentPhoto, defaultProject, mainDuration, photoKey, programTiming, sceneClipKey, targetKey,
+  type AvatarClip, type AvatarRenderSettings, type AvatarSettings, type Branding, type BrollClip, type Project, type RenderState, type TargetRect,
   type VideoSettings, type VoiceSettings
 } from "./lib/project.ts";
-import { api, getServerStatus, pendingClipJobs, runClipJobs, type ServerStatus } from "./lib/avatar.ts";
+import {
+  api, ApiError, cancelRender, fetchProviders, getServerStatus, pendingClipJobs, renderTest, runClipJobs, staleGestureCount, RenderCancelled,
+  type ClipJob, type ProviderInfo, type ServerStatus
+} from "./lib/avatar.ts";
+import { buildAvatarScenes, type AvatarScene } from "./lib/avatarScenes.ts";
+import { loadHistory, nextVersion, saveHistory, type GenerationRecord } from "./lib/history.ts";
+import {
+  ClipPreview, ConfirmDialog, GenerationHistory, RenderAvatarPanel, RenderQueue, TestRenderCard, providerLabel,
+  type ConfirmRequest, type TestState
+} from "./components/AvatarRender.tsx";
 import { deleteMedia, getClipRecord, getMedia, loadProject, newMediaId, putMedia, saveProject } from "./lib/storage.ts";
 import { createAudio, createVideo, loadImage, thumbnail, videoReady } from "./lib/video.ts";
 import { reduceNoise } from "./lib/audio.ts";
@@ -74,11 +90,20 @@ export default function App() {
   const [assistBusy, setAssistBusy] = useState(false);
   const [undoScript, setUndoScript] = useState<string | null>(null);
   const [generating, setGenerating] = useState<{ done: number; total: number } | null>(null);
+  /** In-progress re-renders of lines that already have a clip — the old clip keeps playing meanwhile */
+  const [rerenders, setRerenders] = useState<Record<string, AvatarClip>>({});
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [renderPanel, setRenderPanel] = useState<{ keys: string[] | null } | null>(null);
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
+  const [previewClip, setPreviewClip] = useState<{ url: string; title: string; audio: boolean } | null>(null);
+  const [testText, setTestText] = useState("Welcome to Haven Memory OS™, the Guest Intelligence OS™ created by Nathaniel Clarke and HCCGSA LLC™.");
+  const [testState, setTestState] = useState<TestState>({ status: "idle" });
+  const testAbort = useRef<AbortController | null>(null);
+  const controllers = useRef(new Map<string, AbortController>());
   const [cleaning, setCleaning] = useState<string | null>(null);
   const [translating, setTranslating] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prompter, setPrompter] = useState(false);
-  const genAbort = useRef<AbortController | null>(null);
 
   const patch = useCallback((fn: (p: Project) => Partial<Project>) => setProject(p => ({ ...p, ...fn(p) })), []);
   const setScript = (script: string) => patch(() => ({ script }));
@@ -86,6 +111,7 @@ export default function App() {
   const setVoice = (v: Partial<VoiceSettings>) => patch(p => ({ voice: { ...p.voice, ...v } }));
   const setVideo = (v: Partial<VideoSettings>) => patch(p => ({ video: { ...p.video, ...v } }));
   const setBranding = (b: Partial<Branding>) => patch(p => ({ branding: { ...p.branding, ...b } }));
+  const setAvatarRender = (r: Partial<AvatarRenderSettings>) => patch(p => ({ avatarRender: { ...p.avatarRender, ...r } }));
   const fail = (text: string) => setNotice({ text, tone: "error" });
 
   // ---- parse (live, debounced) ----
@@ -113,6 +139,54 @@ export default function App() {
   const player = useMemo(() => new Player(getState, media), [getState, media]);
   const playheadMain = () => Math.max(0, Math.min(timing.main, player.t - timing.intro));
 
+  // ---- pages (kept in the URL hash so refresh stays put) ----
+  const readHash = (): PageId => {
+    const h = window.location.hash.replace(/^#\/?/, "");
+    return (PAGES.some(pg => pg.id === h) ? h : "editor") as PageId;
+  };
+  const [page, setPage] = useState<PageId>(readHash);
+  useEffect(() => {
+    const onHash = () => setPage(readHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const goPage = (next: PageId, anchor?: string) => {
+    if (window.location.hash !== `#/${next}`) window.location.hash = `/${next}`;
+    setPage(next);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (anchor) document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      else window.scrollTo({ top: 0 });
+    }));
+  };
+
+  // ---- one playback clock for the whole app (plays on while you switch pages) ----
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      player.tick();
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [player]);
+
+  // ---- AI prompter ----
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMessages, setAiMessages] = useState<PrompterMessage[]>([]);
+  const [aiUndo, setAiUndo] = useState<Project | null>(null);
+  const [finding, setFinding] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setAiOpen(o => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // ---- autosave ----
   const projectRef = useRef(project);
   projectRef.current = project;
@@ -133,15 +207,18 @@ export default function App() {
   }, [save]);
 
   // ---- server ----
-  const refreshServer = useCallback(() => void getServerStatus().then(setServer), []);
+  const refreshServer = useCallback(() => {
+    void getServerStatus().then(setServer);
+    fetchProviders().then(setProviders).catch(() => setProviders([]));
+  }, []);
   useEffect(() => {
     refreshServer();
     if (API_URL) fetch(`${API_URL}/health`).then(r => setApiOnline(r.ok)).catch(() => setApiOnline(false));
     else setApiOnline(navigator.onLine);
   }, [refreshServer]);
-  // If D-ID isn't configured, fall back to the free animated voice
+  // If HeyGen isn't configured, fall back to the free animated voice
   useEffect(() => {
-    if (server && !server.did && project.voice.engine === "did" && server.tts) setVoice({ engine: "animated" });
+    if (server && !server.avatar && project.voice.engine === "heygen" && server.tts) setVoice({ engine: "animated" });
   }, [server]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- media elements ----
@@ -196,7 +273,14 @@ export default function App() {
       }
     });
     wanted.forEach((c, key) => {
-      if (!media.clips.has(key)) media.clips.set(key, c.kind === "audio" ? createAudio(c.url!) : createVideo(c.url!));
+      if (media.clips.has(key)) return;
+      if (c.kind === "audio") return void media.clips.set(key, createAudio(c.url!));
+      const el = createVideo(c.url!);
+      // decode a first frame so the avatar has a pose to hold between lines
+      el.addEventListener("loadeddata", () => {
+        if (el.paused && el.currentTime === 0) el.currentTime = 0.05;
+      }, { once: true });
+      media.clips.set(key, el);
     });
   }, [clips, media]);
 
@@ -232,7 +316,7 @@ export default function App() {
       if (stateRef.current.clips[key]) continue;
       void getClipRecord(key).then(rec => {
         if (!rec || stateRef.current.clips[key]?.status === "done") return;
-        setClips(c => ({ ...c, [key]: { key, status: "done", kind: rec.kind, blob: rec.blob, url: URL.createObjectURL(rec.blob), duration: rec.duration, envelope: rec.envelope } }));
+        setClips(c => ({ ...c, [key]: { key, status: "done", kind: rec.kind, blob: rec.blob, url: URL.createObjectURL(rec.blob), duration: rec.duration, envelope: rec.envelope, alpha: rec.alpha, motion: rec.motion } }));
       });
     }
   }, [parse, project.avatar, project.voice]);
@@ -334,33 +418,125 @@ export default function App() {
   };
 
   // ---- actions: avatar ----
-  const generate = async (confirmFirst: boolean): Promise<boolean> => {
-    const jobs = pendingClipJobs(parse.scenes, project.avatar, project.voice, clips);
-    if (jobs.length === 0) return true;
-    if (confirmFirst && project.voice.engine === "did") {
-      const words = jobs.reduce((n, j) => n + j.text.split(/\s+/).length, 0);
-      if (!window.confirm(`Generate ${jobs.length} avatar line${jobs.length > 1 ? "s" : ""} with D-ID (about ${Math.max(1, Math.round(words / 2.5))}s of speech)? This uses D-ID credits.`)) return false;
-    }
-    const ctrl = new AbortController();
-    genAbort.current = ctrl;
-    setGenerating({ done: 0, total: jobs.length });
+  // Generation history for this project (kept in this browser)
+  const [history, setHistory] = useState<GenerationRecord[]>(() => loadHistory(project.id));
+  useEffect(() => setHistory(loadHistory(project.id)), [project.id]);
+  const record = (r: Omit<GenerationRecord, "id" | "projectId">) => setHistory(h => {
+    const next = [...h, { ...r, id: newMediaId("g"), projectId: projectRef.current.id }];
+    saveHistory(projectRef.current.id, next);
+    return next;
+  });
+
+  const historyError = (text: string, d?: { http?: number; code?: string; jobId?: string; requestId?: string } | null) =>
+    [d?.http ? `HTTP ${d.http}` : "", d?.code ?? "", text, d?.jobId ?? d?.requestId ?? ""].filter(Boolean).join(" · ").slice(0, 300);
+  const voiceName = () => project.voice.engine === "heygen" ? project.voice.heygenVoice?.name || "Avatar's own voice" : project.voice.preset;
+  const avatarLabel = () => project.voice.engine === "heygen" ? project.avatar.heygen?.name ?? "—" : "Presenter photo";
+  const providerFor = (id: string) => (id === "auto" ? providers[0] : providers.find(x => x.id === id));
+  const isPaid = (id: string) => project.voice.engine === "heygen" && (providerFor(id)?.capabilities.paid ?? true);
+
+  /** Render exactly these lines (clip keys) — only ever called after the user confirmed */
+  const startRender = async (keys: string[], providerId?: string) => {
+    const state = stateRef.current;
+    const jobs: ClipJob[] = pendingClipJobs(parse, project.avatar, project.voice, state.clips, project.targets, false, new Set(keys));
+    if (!jobs.length) return;
+    const hadClip = new Set(jobs.filter(j => state.clips[j.key]?.status === "done").map(j => j.key));
+    const opts = { ...project.avatarRender, provider: providerId ?? project.avatarRender.provider };
+    const snapshot = { avatar: avatarLabel(), voice: voiceName(), quality: opts.quality };
+    setGenerating(g => ({ done: g?.done ?? 0, total: (g?.total ?? 0) + jobs.length }));
     try {
-      const key = photoKey(project.avatar);
-      const result = await runClipJobs(jobs, project.avatar, project.voice,
-        (k, clip) => {
-          setClips(c => ({ ...c, [k]: clip }));
-          if (clip.status === "done" || clip.status === "error") setGenerating(g => g && { ...g, done: g.done + 1 });
-        },
-        didUrl => patch(p => ({ avatar: { ...p.avatar, photos: { ...p.avatar.photos, [key]: { ...p.avatar.photos[key], didUrl } } } })),
-        ctrl.signal);
-      if (result.failed) fail(`${result.failed} avatar line${result.failed > 1 ? "s" : ""} didn't generate — see the Avatar Studio for details.`);
-      return result.failed === 0;
+      const result = await runClipJobs(jobs, project.avatar, project.voice, opts, (k, clip) => {
+        // a line that already has a clip keeps playing it until the new one is done
+        if (clip.status !== "done" && stateRef.current.clips[k]?.status === "done") return setRerenders(r => ({ ...r, [k]: clip }));
+        setRerenders(r => {
+          if (!(k in r)) return r;
+          const { [k]: _, ...rest } = r;
+          return rest;
+        });
+        setClips(c => ({ ...c, [k]: clip }));
+      }, controllers.current, (job, clip) => {
+        setGenerating(g => g && { ...g, done: g.done + 1 });
+        const completed = clip.status === "done";
+        const version = nextVersion(loadHistory(projectRef.current.id), job.key);
+        if (completed) setClips(c => ({ ...c, [job.key]: { ...clip, version } }));
+        record({
+          // numbered like the queue: Nth voiceover line
+          sceneIndex: parse.scenes.filter(x => x.spoken).findIndex(x => x.index === job.scene.index), clipKey: job.key, text: job.text.slice(0, 120),
+          provider: clip.provider ?? opts.provider, ...snapshot, at: Date.now(),
+          duration: completed ? clip.duration ?? null : null,
+          status: completed ? "completed" : clip.status === "error" ? "failed" : "cancelled",
+          version: completed ? version : 0, regeneration: hadClip.has(job.key), test: false,
+          error: clip.error ? historyError(clip.error, clip.errorDetail) : undefined
+        });
+      });
+      if (result.failed) fail(`${result.failed} avatar scene${result.failed > 1 ? "s" : ""} didn't render. See Avatar generation on the Avatar page. Nothing is retried without your OK.`);
     } catch (err) {
       fail(err instanceof Error && err.message.length < 200 ? err.message : "Avatar generation failed. Try again.");
-      return false;
     } finally {
-      setGenerating(null);
+      setGenerating(g => (g && g.done >= g.total ? null : g));
     }
+  };
+
+  const cancelOne = (key: string) => {
+    const c = controllers.current.get(key);
+    if (c) c.abort();
+    const jobId = (rerenders[key] ?? clips[key])?.jobId;
+    if (jobId && !c) void cancelRender(jobId);
+  };
+  const cancelAll = () => controllers.current.forEach(c => c.abort());
+
+  /** Single-line render from a queue button — always confirmed first */
+  const confirmLine = (s: AvatarScene, kind: "retry" | "regenerate" | "provider", provider?: ProviderInfo) => {
+    if (!s.key) return;
+    const key = s.key;
+    const pid = provider?.id ?? project.avatarRender.provider;
+    const paid = project.voice.engine === "heygen" && (provider?.capabilities.paid ?? isPaid(pid));
+    const credits = paid ? " may consume additional provider credits." : " doesn't use credits (free/mock renderer).";
+    if (kind === "regenerate") {
+      return setConfirmReq({
+        title: "Regenerate scene?", confirmLabel: "Regenerate", onConfirm: () => void startRender([key], provider?.id),
+        body: <p>This scene has already been generated. Regenerating{credits}</p>
+      });
+    }
+    if (kind === "provider" && provider) {
+      return setConfirmReq({
+        title: `Try ${provider.label}?`, confirmLabel: `Try ${provider.label}`, onConfirm: () => void startRender([key], provider.id),
+        body: <p>Generation failed with {providerLabel(providers, s.provider)}. Try {provider.label} for this scene?{provider.capabilities.paid ? " This may use that provider's credits." : ""}</p>
+      });
+    }
+    setConfirmReq({
+      title: "Render this scene?", confirmLabel: "Render", onConfirm: () => void startRender([key]),
+      body: <p>Render scene “{s.voiceoverText.slice(0, 80)}{s.voiceoverText.length > 80 ? "…" : ""}” again? Rendering{credits}</p>
+    });
+  };
+
+  const runTest = () => {
+    const look = project.avatar.heygen;
+    if (!look) return;
+    const text = testText.trim();
+    const pid = project.avatarRender.provider;
+    const go = async () => {
+      const ctrl = new AbortController();
+      testAbort.current = ctrl;
+      setTestState({ status: "rendering", progress: 0 });
+      const snapshot = { avatar: look.name, voice: voiceName(), quality: "preview" };
+      try {
+        const r = await renderTest(look, project.voice, text, project.avatarRender, u => setTestState(t => ({ ...t, progress: u.progress })), ctrl.signal);
+        setTestState(prev => {
+          if (prev.result) URL.revokeObjectURL(prev.result.url);
+          return { status: "done", result: { url: r.url, duration: r.duration, provider: r.provider, alpha: r.alpha, ...snapshot } };
+        });
+        record({ sceneIndex: null, clipKey: null, text: text.slice(0, 120), provider: r.provider, ...snapshot, at: Date.now(), duration: r.duration, status: "completed", version: 0, regeneration: false, test: true });
+      } catch (err) {
+        const cancelled = err instanceof RenderCancelled;
+        const api = err instanceof ApiError ? err : null;
+        setTestState({ status: cancelled ? "idle" : "error", error: api ? api.message : "The test render failed. Try again.", detail: api?.detail });
+        record({ sceneIndex: null, clipKey: null, text: text.slice(0, 120), provider: api?.detail?.provider ?? pid, ...snapshot, at: Date.now(), duration: null, status: cancelled ? "cancelled" : "failed", version: 0, regeneration: false, test: true, error: api ? historyError(api.message, api.detail) : undefined });
+      }
+    };
+    setConfirmReq({
+      title: "Generate a 10-second test?", confirmLabel: "Generate test", onConfirm: () => void go(),
+      body: <p>This renders one short TEST RENDER with {look.name} at preview quality. It won't be placed on the timeline.{isPaid(pid) ? " It uses a small amount of provider credits." : ""}</p>
+    });
   };
 
   // ---- actions: script & effects ----
@@ -402,7 +578,7 @@ export default function App() {
       },
       onCancel: () => setPlacement(null)
     });
-    document.getElementById("video")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    goPage("effects", "effects-preview");
   };
 
   const addEffect = (keyword: string, type: DirectionType, text: string) => {
@@ -422,7 +598,7 @@ export default function App() {
       },
       onCancel: () => setPlacement(null)
     });
-    document.getElementById("video")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    goPage("effects", "effects-preview");
   };
 
   const onTranslate = async (language: string) => {
@@ -451,6 +627,42 @@ export default function App() {
     }
   };
 
+  const runCommand = async (prompt: string) => {
+    setAiMessages(m => [...m, { role: "user", text: prompt }]);
+    setAiBusy(true);
+    try {
+      const before = projectRef.current;
+      const context = buildContext(before, parse, page, playheadMain(), main);
+      const edits = await api<CommandEdits>("/api/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, context })
+      });
+      const { project: next, effects: fx, changed } = applyEdits(before, edits);
+      // Effects at specific times go in as timestamped lines
+      let placeLater = 0;
+      for (const f of [...fx].sort((a, b) => b.at_seconds - a.at_seconds)) {
+        if (!f.text?.trim() || !Number.isFinite(f.at_seconds)) continue;
+        const scenes = parseScript(next.script, next.avatarName || "Presenter", mainDuration(next)).scenes;
+        next.script = insertDirection(next.script, scenes, Math.max(0, f.at_seconds), `${f.keyword}: ${f.text.trim()}`);
+        if (["ZOOM", "HIGHLIGHT", "PULSE", "POINTS TO", "CALLOUT"].includes(f.keyword)) placeLater++;
+      }
+      if (changed.length || fx.length) {
+        setAiUndo(before);
+        setProject(next);
+        setForceParse(n => n + 1);
+      }
+      if (edits.translate_captions_to) await onTranslate(edits.translate_captions_to);
+      if (edits.go_to_page) goPage(edits.go_to_page);
+      const extra = placeLater ? ` ${placeLater === 1 ? "It lands" : "They land"} in the center until you place ${placeLater === 1 ? "it" : "them"} on the Effects page.` : "";
+      setAiMessages(m => [...m, { role: "assistant", text: `${edits.reply}${extra}` }]);
+    } catch (err) {
+      setAiMessages(m => [...m, { role: "error", text: err instanceof Error ? err.message : "Something went wrong. Try again." }]);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
   const exportSources = async (): Promise<ExportSources> => ({
     base: baseUrl, cleanedAudio: cleanUrl, music: musicUrl, broll: new Map(brollUrls.current), photo: photoUrl
   });
@@ -468,6 +680,11 @@ export default function App() {
   };
 
   const spokenScenes = parse.scenes.filter(s => s.spoken);
+  const avatarScenes = buildAvatarScenes(parse, project, clips, main);
+  // the queue shows a re-render's progress; the timeline keeps playing the old clip until it's replaced
+  const queueScenes = Object.keys(rerenders).length ? buildAvatarScenes(parse, project, { ...clips, ...rerenders }, main) : avatarScenes;
+  const openRender = (keys: string[] | null = null) => setRenderPanel({ keys });
+  const staleCount = staleGestureCount(parse, project.avatar, project.voice, clips, project.targets);
   const clipsReady = spokenScenes.filter(s => {
     const k = sceneClipKey(project.avatar, project.voice, s.spoken);
     return k && clips[k]?.status === "done";
@@ -475,103 +692,230 @@ export default function App() {
   const fileBase = (project.name || "directorai").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "directorai";
   const languages = Object.keys(project.translations);
 
+  const hasAvatar = project.voice.engine === "heygen" ? !!project.avatar.heygen : !!photo;
+  const canGenerate = hasAvatar && spokenScenes.length > 0;
+  const staleKeys = () => pendingClipJobs(parse, project.avatar, project.voice, clips, project.targets, true)
+    .filter(j => clips[j.key]?.status === "done").map(j => j.key);
+  const current = PAGES.find(pg => pg.id === page)!;
+
+  const preview = (
+    <VideoPreview player={player} media={media} getState={getState} effects={effects}
+      hasBase={!!project.base} onPickBase={() => goPage("editor", "video")}
+      showTargets={showTargets} selectedId={selectedId} placement={placement} />
+  );
+  const timeline = (
+    <Timeline player={player} timing={timing} parse={parse} effects={effects} project={project}
+      clips={clips} chapters={chapters} selectedId={selectedId} onSelect={selectDirection} />
+  );
+
   return (
-    <div className="min-h-full pb-10">
-      <Header name={project.name} setName={name => patch(() => ({ name }))} savedAt={savedAt} onSave={save}
-        onExport={() => document.getElementById("export")?.scrollIntoView({ behavior: "smooth" })}
-        onSettings={() => setSettingsOpen(true)} apiOnline={apiOnline} />
+    <div className="min-h-full">
+      <Header page={page} onPage={p => goPage(p)} name={project.name} setName={name => patch(() => ({ name }))}
+        savedAt={savedAt} onSave={save} onSettings={() => setSettingsOpen(true)} apiOnline={apiOnline} />
 
-      {notice && (
-        <div className="sticky top-[60px] z-20 mx-auto mt-3 max-w-[1500px] px-4">
-          <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-lg ${notice.tone === "error" ? "border-red-400/40 bg-[#3a1d2a] text-red-100" : "border-gold/40 bg-navy-600 text-gold"}`} role={notice.tone === "error" ? "alert" : "status"}>
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
-            <span className="flex-1">{notice.text}</span>
-            <button onClick={() => setNotice(null)} aria-label="Dismiss"><X size={16} /></button>
+      <div className="flex">
+        <ToolSidebar player={player} onAi={() => setAiOpen(true)}
+          onParse={() => {
+            setForceParse(n => n + 1);
+            goPage("editor", "script");
+          }}
+          onFind={() => {
+            setFinding(true);
+            goPage("editor", "script");
+          }}
+          onPlaceEffect={() => goPage("effects", "effects-add")}
+          onGenerate={() => {
+            goPage("avatar");
+            openRender();
+          }}
+          canGenerate={canGenerate}
+          onTeleprompter={() => setPrompter(true)}
+          onExport={() => goPage("export")}
+          onSettings={() => setSettingsOpen(true)} />
+
+        <main className="mx-auto w-full min-w-0 max-w-[1400px] px-4 pb-28 pt-6 sm:px-6 lg:pb-12">
+          {notice && (
+            <div className="sticky top-[80px] z-20 mb-4">
+              <div className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-sm shadow-lg ${notice.tone === "error" ? "border-red-400/40 bg-[#3a1d2a] text-red-100" : "border-gold/40 bg-navy-600 text-gold"}`} role={notice.tone === "error" ? "alert" : "status"}>
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span className="flex-1">{notice.text}</span>
+                <button onClick={() => setNotice(null)} aria-label="Dismiss" className="min-h-6"><X size={16} /></button>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
+            <PageHeader icon={current.icon} title={current.label} subtitle={current.blurb} actions={page === "editor" && avatarScenes.length > 0 ? (
+              <button className="btn btn-gold" onClick={() => openRender()} disabled={!canGenerate}
+                title={hasAvatar ? `${avatarScenes.length} avatar scene${avatarScenes.length > 1 ? "s" : ""} parsed` : "Pick an avatar on the Avatar page first"}>
+                <Sparkles size={16} /> Render avatar
+              </button>
+            ) : undefined} />
+
+            {page === "editor" && (
+              <>
+                <ScriptSection
+                  script={project.script}
+                  setScript={setScript}
+                  parse={parse}
+                  onParse={() => setForceParse(n => n + 1)}
+                  duration={main}
+                  intro={timing.intro}
+                  onAssist={onAssist}
+                  assistBusy={assistBusy}
+                  canUndo={undoScript !== null}
+                  onUndo={() => {
+                    if (undoScript === null) return;
+                    setScript(undoScript);
+                    setUndoScript(null);
+                    setForceParse(n => n + 1);
+                  }}
+                  selectedId={selectedId}
+                  onSelectDirection={d => (TARGETED.has(d.type) ? place(d) : selectDirection(d))}
+                  onEditSpoken={(scene: Scene, text: string) => {
+                    setScript(replaceSpoken(projectRef.current.script, scene, text));
+                    setForceParse(n => n + 1);
+                  }}
+                  onSeek={t => player.seek(t)}
+                  avatarName={project.avatarName}
+                  setAvatarName={avatarName => patch(() => ({ avatarName }))}
+                  finding={finding}
+                  setFinding={setFinding}
+                />
+                <VideoSection player={player} media={media} getState={getState} effects={effects} project={project} setVideo={setVideo}
+                  setDuration={d => patch(() => ({ durationInput: d }))} parse={parse} clips={clips} chapters={chapters}
+                  selectedId={selectedId} onSelect={selectDirection} placement={placement} showTargets={showTargets} setShowTargets={setShowTargets}
+                  onBaseFile={f => void onBaseFile(f)}
+                  onRemoveBase={() => {
+                    if (project.base) void deleteMedia(project.base.mediaId);
+                    if (project.cleanedAudio) void deleteMedia(project.cleanedAudio.mediaId);
+                    patch(p => ({ base: null, cleanedAudio: null, video: { ...p.video, trimIn: 0, trimOut: null, cleanBaseAudio: false } }));
+                  }}
+                  busy={busy} />
+              </>
+            )}
+
+            {page === "effects" && (
+              <EffectsBranding project={project} effects={effects} intro={timing.intro} playhead={playheadMain} selectedId={selectedId}
+                onSelect={selectDirection} onAdd={addEffect} onPlace={place}
+                onResetTarget={d => patch(p => {
+                  const next = { ...p.targets };
+                  delete next[targetKey(d)];
+                  return { targets: next };
+                })}
+                onColor={(d, color) => patch(p => ({ effectStyles: { ...p.effectStyles, [targetKey(d)]: { ...p.effectStyles[targetKey(d)], color: color ?? undefined } } }))}
+                setBranding={setBranding} languages={languages} stage={preview} timeline={timeline} />
+            )}
+
+            {page === "advanced" && (
+              <AdvancedTools project={project} chapters={chapters} spokenLines={spokenScenes.map(s => s.spoken)} setVideo={setVideo}
+                onCleanBase={() => clean("base")} onCleanMusic={() => clean("music")} cleaning={cleaning}
+                onAddBroll={f => void onAddBroll(f)}
+                onUpdateBroll={(id, change) => patch(p => ({ broll: p.broll.map(b => (b.id === id ? { ...b, ...change } : b)) }))}
+                onRemoveBroll={id => patch(p => {
+                  const b = p.broll.find(x => x.id === id);
+                  if (b) void deleteMedia(b.mediaId);
+                  return { broll: p.broll.filter(x => x.id !== id) };
+                })}
+                playhead={playheadMain} onTranslate={onTranslate} translating={translating} onTeleprompter={() => setPrompter(true)} fileBase={fileBase} />
+            )}
+
+            {page === "audio" && (
+              <AudioPage project={project} setVideo={setVideo} setVoice={setVoice} server={server} player={player}
+                onMusicFile={f => void onMusicFile(f)}
+                onRemoveMusic={() => {
+                  if (project.music) void deleteMedia(project.music.mediaId);
+                  patch(() => ({ music: null }));
+                }}
+                onCleanBase={() => clean("base")} onCleanMusic={() => clean("music")} cleaning={cleaning} />
+            )}
+
+            {page === "avatar" && (
+              <AvatarStudio avatar={project.avatar} voice={project.voice} setAvatar={setAvatar} setVoice={setVoice} onPhoto={onPhoto}
+                server={server} parse={parse} clips={clips} onGenerate={() => openRender()} generating={generating}
+                staleCount={staleCount} onRegenerateStale={() => openRender(staleKeys())}
+                onCancel={cancelAll}
+                queue={
+                  <RenderQueue scenes={queueScenes} providers={providers} canRender={canGenerate}
+                    onOpenPanel={() => openRender()} onCancel={cancelOne} onCancelAll={cancelAll}
+                    onRetry={s => confirmLine(s, "retry")} onRegenerate={s => confirmLine(s, "regenerate")}
+                    onTryProvider={(s, pr) => confirmLine(s, "provider", pr)}
+                    onPreview={s => s.clip?.url && setPreviewClip({ url: s.clip.url, title: `Scene ${avatarScenes.indexOf(s) + 1} · ${s.avatarName}`, audio: s.clip.kind === "audio" })}
+                    onEditScript={() => goPage("editor", "script")}
+                    onChangeAvatar={() => document.getElementById("avatar-gallery")?.scrollIntoView({ behavior: "smooth" })}
+                    onFasterVoice={project.voice.speed !== "fast" ? () => {
+                      setVoice({ speed: project.voice.speed === "slow" ? "normal" : "fast" });
+                      setNotice({ text: "Voice speed raised. Rendered lines now play faster, which may raise the pitch slightly.", tone: "info" });
+                    } : null} />
+                }
+                extras={project.voice.engine === "heygen" ? (
+                  <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-2">
+                    <TestRenderCard text={testText} setText={setTestText} state={testState}
+                      disabledReason={!project.avatar.heygen ? "Pick an avatar first." : providers.length === 0 ? "No avatar renderer is set up on the server." : null}
+                      providerName={providerLabel(providers, project.avatarRender.provider === "auto" ? providers[0]?.id : project.avatarRender.provider)}
+                      onGenerate={runTest} onCancel={() => testAbort.current?.abort()} />
+                    <GenerationHistory records={history} providers={providers} />
+                  </div>
+                ) : <GenerationHistory records={history} providers={providers} />}
+                onAccessCodeSaved={() => {
+                  refreshServer();
+                  setNotice({ text: "Access code saved.", tone: "info" });
+                }} />
+            )}
+
+            {page === "export" && (
+              spokenScenes.length === 0 && parse.scenes.length === 0 ? (
+                <EmptyState icon={<Clapperboard size={20} />} title="Nothing to export yet"
+                  action={<button className="btn btn-gold" onClick={() => goPage("editor")}>Write a script</button>}>
+                  Write a script on the Editor page first.
+                </EmptyState>
+              ) : (
+                <ExportSection getState={getState} sources={exportSources} clipsReady={clipsReady} clipsNeeded={spokenScenes.length}
+                  canGenerate={hasAvatar} onRenderAvatar={() => openRender()} pausePreview={() => player.pause()} fileBase={fileBase} />
+              )
+            )}
+
+            <footer className="py-4 text-center text-xs text-white/35">
+              DirectorAI™ | HCCGSA LLC · <a className="hover:text-gold" href="https://directorai.hccgsa.com/legal">Privacy</a>
+            </footer>
           </div>
-        </div>
-      )}
+        </main>
+      </div>
 
-      <main className="mx-auto grid max-w-[1500px] grid-cols-[minmax(0,1fr)] gap-4 px-3 pt-4 sm:px-4">
-        <ScriptSection
-          script={project.script}
-          setScript={setScript}
-          parse={parse}
-          onParse={() => setForceParse(n => n + 1)}
-          duration={main}
-          intro={timing.intro}
-          onAssist={onAssist}
-          assistBusy={assistBusy}
-          canUndo={undoScript !== null}
-          onUndo={() => {
-            if (undoScript === null) return;
-            setScript(undoScript);
-            setUndoScript(null);
-            setForceParse(n => n + 1);
-          }}
-          selectedId={selectedId}
-          onSelectDirection={d => (TARGETED.has(d.type) ? place(d) : selectDirection(d))}
-          onEditSpoken={(scene: Scene, text: string) => {
-            setScript(replaceSpoken(projectRef.current.script, scene, text));
-            setForceParse(n => n + 1);
-          }}
-          onSeek={t => player.seek(t)}
-          avatarName={project.avatarName}
-          setAvatarName={avatarName => patch(() => ({ avatarName }))}
-        />
+      <MobileTabs page={page} onPage={p => goPage(p)} />
+      <button onClick={() => setAiOpen(true)} aria-label="Ask AI"
+        className="fixed bottom-20 right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-gold text-navy shadow-xl lg:hidden">
+        <Sparkles size={22} />
+      </button>
 
-        <AvatarStudio avatar={project.avatar} voice={project.voice} setAvatar={setAvatar} setVoice={setVoice} onPhoto={onPhoto}
-          server={server} parse={parse} clips={clips} onGenerate={() => void generate(true)} generating={generating}
-          onCancel={() => genAbort.current?.abort()} />
-
-        <VideoSection player={player} media={media} getState={getState} effects={effects} project={project} setVideo={setVideo}
-          setDuration={d => patch(() => ({ durationInput: d }))} parse={parse} clips={clips} chapters={chapters}
-          selectedId={selectedId} onSelect={selectDirection} placement={placement} showTargets={showTargets} setShowTargets={setShowTargets}
-          onBaseFile={f => void onBaseFile(f)}
-          onRemoveBase={() => {
-            if (project.base) void deleteMedia(project.base.mediaId);
-            if (project.cleanedAudio) void deleteMedia(project.cleanedAudio.mediaId);
-            patch(p => ({ base: null, cleanedAudio: null, video: { ...p.video, trimIn: 0, trimOut: null, cleanBaseAudio: false } }));
-          }}
-          onMusicFile={f => void onMusicFile(f)}
-          onRemoveMusic={() => {
-            if (project.music) void deleteMedia(project.music.mediaId);
-            patch(() => ({ music: null }));
-          }}
-          busy={busy} />
-
-        <EffectsBranding project={project} effects={effects} intro={timing.intro} playhead={playheadMain} selectedId={selectedId}
-          onSelect={selectDirection} onAdd={addEffect} onPlace={place}
-          onResetTarget={d => patch(p => {
-            const next = { ...p.targets };
-            delete next[targetKey(d)];
-            return { targets: next };
-          })}
-          onColor={(d, color) => patch(p => ({ effectStyles: { ...p.effectStyles, [targetKey(d)]: { ...p.effectStyles[targetKey(d)], color: color ?? undefined } } }))}
-          setBranding={setBranding} languages={languages} />
-
-        <AdvancedTools project={project} chapters={chapters} spokenLines={spokenScenes.map(s => s.spoken)} setVideo={setVideo}
-          onCleanBase={() => clean("base")} onCleanMusic={() => clean("music")} cleaning={cleaning}
-          onAddBroll={f => void onAddBroll(f)}
-          onUpdateBroll={(id, change) => patch(p => ({ broll: p.broll.map(b => (b.id === id ? { ...b, ...change } : b)) }))}
-          onRemoveBroll={id => patch(p => {
-            const b = p.broll.find(x => x.id === id);
-            if (b) void deleteMedia(b.mediaId);
-            return { broll: p.broll.filter(x => x.id !== id) };
-          })}
-          playhead={playheadMain} onTranslate={onTranslate} translating={translating} onTeleprompter={() => setPrompter(true)} fileBase={fileBase} />
-
-        <ExportSection getState={getState} sources={exportSources} clipsReady={clipsReady} clipsNeeded={spokenScenes.length}
-          canGenerate={!!photo} ensureAvatar={() => generate(false)} pausePreview={() => player.pause()} fileBase={fileBase} />
-
-        <footer className="py-4 text-center text-xs text-white/35">
-          DirectorAI™ | HCCGSA LLC · <a className="hover:text-gold" href="https://directorai.hccgsa.com/legal">Privacy</a>
-        </footer>
-      </main>
-
+      <AiPrompter open={aiOpen} onClose={() => setAiOpen(false)} onSubmit={runCommand} messages={aiMessages} busy={aiBusy}
+        canUndo={!!aiUndo} onUndo={() => {
+          if (!aiUndo) return;
+          setProject(aiUndo);
+          setAiUndo(null);
+          setForceParse(n => n + 1);
+          setAiMessages(m => [...m, { role: "assistant", text: "Undone — the project is back to how it was before that change." }]);
+        }} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} server={server} onAccessCodeSaved={() => {
         refreshServer();
         setNotice({ text: "Access code saved.", tone: "info" });
       }} onReset={resetProject} />
+      <RenderAvatarPanel open={!!renderPanel} onClose={() => setRenderPanel(null)} scenes={queueScenes} preselect={renderPanel?.keys ?? null}
+        rendered={project.voice.engine === "heygen"} avatarName={project.voice.engine === "heygen" ? project.avatar.heygen?.name ?? null : "Presenter photo"}
+        avatarImage={project.voice.engine === "heygen" ? project.avatar.heygen?.image ?? null : photo?.thumbnail ?? null}
+        voiceName={voiceName()} providers={providers} settings={project.avatarRender} setSettings={setAvatarRender}
+        rate={SPEED_RATE[project.voice.speed]}
+        onChangeAvatar={() => {
+          setRenderPanel(null);
+          goPage("avatar", "avatar-gallery");
+        }}
+        onChangeVoice={() => {
+          setRenderPanel(null);
+          goPage("audio");
+        }}
+        onConfirm={keys => void startRender(keys)} />
+      <ConfirmDialog request={confirmReq} onClose={() => setConfirmReq(null)} />
+      <ClipPreview clip={previewClip} onClose={() => setPreviewClip(null)} />
       {prompter && <Teleprompter lines={spokenScenes.map(s => s.spoken)} onClose={() => setPrompter(false)} />}
     </div>
   );

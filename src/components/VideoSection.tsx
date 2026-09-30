@@ -1,6 +1,6 @@
 import { useRef } from "react";
-import { Crosshair, Film, Music, Scissors, Trash2, Upload, Volume2 } from "lucide-react";
-import { Card, Section, Slider, Toggle } from "./ui.tsx";
+import { Crosshair, Film, Scissors, Trash2, Upload } from "lucide-react";
+import { Card, Section, Slider } from "./ui.tsx";
 import VideoPreview, { type Placement } from "./VideoPreview.tsx";
 import Timeline from "./Timeline.tsx";
 import type { Player } from "../lib/player.ts";
@@ -30,15 +30,12 @@ interface Props {
   setShowTargets: (v: boolean) => void;
   onBaseFile: (f: File) => void;
   onRemoveBase: () => void;
-  onMusicFile: (f: File) => void;
-  onRemoveMusic: () => void;
   busy: string | null;
 }
 
 export default function VideoSection(p: Props) {
   const baseRef = useRef<HTMLInputElement>(null);
-  const musicRef = useRef<HTMLInputElement>(null);
-  const { video, base, music } = p.project;
+  const { video, base } = p.project;
   const trimOut = base ? Math.min(video.trimOut ?? base.duration, base.duration) : 0;
   const playheadBase = () => {
     const m = p.player.t - p.getState().timing.intro;
@@ -46,7 +43,7 @@ export default function VideoSection(p: Props) {
   };
 
   return (
-    <Section id="video" number={3} icon={<Film size={18} />} title="Video Editor" subtitle="Base video, preview, timeline, trim, speed and mix"
+    <Section id="video" icon={<Film size={18} />} title="Video" subtitle="Base video, preview, timeline, trim and speed"
       actions={
         <button className={`btn !py-1.5 text-xs ${p.showTargets ? "btn-gold" : "btn-ghost"}`} onClick={() => p.setShowTargets(!p.showTargets)} aria-pressed={p.showTargets}>
           <Crosshair size={14} /> {p.showTargets ? "Hide effect boxes" : "Show effect boxes"}
@@ -57,13 +54,8 @@ export default function VideoSection(p: Props) {
         if (f) p.onBaseFile(f);
         e.target.value = "";
       }} />
-      <input ref={musicRef} type="file" accept="audio/*" className="hidden" onChange={e => {
-        const f = e.target.files?.[0];
-        if (f) p.onMusicFile(f);
-        e.target.value = "";
-      }} />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <div
           className="min-w-0"
           onDragOver={e => e.preventDefault()}
@@ -71,7 +63,6 @@ export default function VideoSection(p: Props) {
             e.preventDefault();
             const f = e.dataTransfer.files[0];
             if (f?.type.startsWith("video/")) p.onBaseFile(f);
-            else if (f?.type.startsWith("audio/")) p.onMusicFile(f);
           }}
         >
           <VideoPreview player={p.player} media={p.media} getState={p.getState} effects={p.effects}
@@ -100,7 +91,7 @@ export default function VideoSection(p: Props) {
                 </label>
               </div>
             )}
-            <p className="mt-2 text-[11px] text-white/40">Up to 30 minutes. Drop a video or music file anywhere on the preview.</p>
+            <p className="mt-2 text-[11px] text-white/40">Up to 30 minutes. You can also drop a video onto the preview.</p>
           </Card>
 
           <Card title="Trim & speed" icon={<Scissors size={16} />}>
@@ -120,36 +111,10 @@ export default function VideoSection(p: Props) {
             ) : <p className="text-sm text-white/40">Upload a video to trim it and change its speed.</p>}
           </Card>
 
-          <Card title="Audio mix" icon={<Volume2 size={16} />}>
-            <div className="space-y-2.5">
-              <Slider label="Video" value={video.volumes.video} min={0} max={1} step={0.05} format={v => `${Math.round(v * 100)}%`} onChange={v => p.setVideo({ volumes: { ...video.volumes, video: v } })} />
-              <Slider label="Voiceover" value={video.volumes.voice} min={0} max={1} step={0.05} format={v => `${Math.round(v * 100)}%`} onChange={v => p.setVideo({ volumes: { ...video.volumes, voice: v } })} />
-              <Slider label="Music" value={video.volumes.music} min={0} max={1} step={0.05} format={v => `${Math.round(v * 100)}%`} onChange={v => p.setVideo({ volumes: { ...video.volumes, music: v } })} />
-            </div>
-            <div className="mt-3 border-t border-white/10 pt-3">
-              <div className="flex items-center gap-2 text-sm">
-                <Music size={14} className="text-gold" />
-                {music ? (
-                  <>
-                    <span className="min-w-0 flex-1 truncate" title={music.name}>{music.name}</span>
-                    <button className="btn btn-ghost !px-1.5 !py-1" onClick={p.onRemoveMusic} aria-label="Remove music"><Trash2 size={14} /></button>
-                  </>
-                ) : (
-                  <button className="btn btn-ghost flex-1 !py-1 text-xs" onClick={() => musicRef.current?.click()}><Upload size={14} /> Add background music</button>
-                )}
-              </div>
-              {music && (
-                <label className="mt-2 flex items-center justify-between text-xs text-white/60">
-                  Loop music to the end
-                  <Toggle checked={video.musicLoop} onChange={v => p.setVideo({ musicLoop: v })} label="Loop music" />
-                </label>
-              )}
-            </div>
-          </Card>
         </div>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-6">
         <Timeline player={p.player} timing={p.getState().timing} parse={p.parse} effects={p.effects} project={p.project}
           clips={p.clips} chapters={p.chapters} selectedId={p.selectedId} onSelect={p.onSelect} />
       </div>

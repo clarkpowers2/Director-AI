@@ -5,17 +5,17 @@ import type { Direction, ParseResult } from "./parser.ts";
 
 export type PresenterId = "professional" | "creator" | "anchor" | "tech" | "custom";
 export type OutfitId = "formal" | "casual" | "creative" | "custom";
-export type AvatarPosition = "corner-left" | "corner-right" | "side" | "full" | "floating";
+export type AvatarPosition = "left" | "right" | "bottom-center" | "corner" | "full";
 export type AvatarSize = "small" | "medium" | "large";
 
 export const PRESENTERS: Record<PresenterId, {
-  name: string; description: string; outfit: OutfitId; voice: VoicePreset; tone: VoiceTone; position: AvatarPosition;
+  name: string; description: string; outfit: OutfitId; voice: VoicePreset; gesture: GestureStyle; position: AvatarPosition;
 }> = {
-  professional: { name: "Professional presenter", description: "Business demos, sales outreach", outfit: "formal", voice: "pro-male", tone: "authoritative", position: "corner-left" },
-  creator: { name: "YouTube creator", description: "Casual explainers, talking head", outfit: "creative", voice: "casual-female", tone: "warm", position: "corner-right" },
-  anchor: { name: "News anchor", description: "Announcements, briefings", outfit: "formal", voice: "pro-female", tone: "authoritative", position: "side" },
-  tech: { name: "Tech demo presenter", description: "Product walkthroughs, onboarding", outfit: "casual", voice: "casual-male", tone: "neutral", position: "floating" },
-  custom: { name: "Custom", description: "Your own presenter photo", outfit: "custom", voice: "pro-female", tone: "neutral", position: "corner-left" }
+  professional: { name: "Professional presenter", description: "Business demos, sales outreach", outfit: "formal", voice: "pro-male", gesture: "presenter", position: "left" },
+  creator: { name: "YouTube creator", description: "Casual explainers, talking head", outfit: "creative", voice: "casual-female", gesture: "casual", position: "right" },
+  anchor: { name: "News anchor", description: "Announcements, briefings", outfit: "formal", voice: "pro-female", gesture: "anchor", position: "right" },
+  tech: { name: "Tech demo presenter", description: "Product walkthroughs, onboarding", outfit: "casual", voice: "casual-male", gesture: "teacher", position: "right" },
+  custom: { name: "Custom", description: "Your own presenter photo", outfit: "custom", voice: "pro-female", gesture: "presenter", position: "left" }
 };
 
 export const OUTFITS: Record<OutfitId, string> = {
@@ -25,11 +25,33 @@ export const OUTFITS: Record<OutfitId, string> = {
   custom: "Custom"
 };
 
-/** A presenter photo. The full image lives in IndexedDB; D-ID gets its own upload when first needed. */
+/** A presenter photo (animated engine). The full image lives in IndexedDB. */
 export interface AvatarImage {
   mediaId: string;
   thumbnail: string;
-  didUrl?: string;
+}
+
+/** A HeyGen avatar look, as shown in the gallery */
+export interface HeyGenLook {
+  id: string;
+  name: string;
+  type: "studio_avatar" | "digital_twin" | "photo_avatar";
+  image: string | null;
+  video: string | null;
+  voice: string | null;
+  tags: string[];
+  engines: string[];
+  status: string;
+  /** Gallery tab, from HeyGen's avatar_type (studio avatars split by "Standing"/"Full Body" in the name) */
+  category: "full_body" | "studio" | "digital_twin" | "talking_head";
+}
+
+/** Photo avatars take gesture prompts on the default engine; video avatars only on Avatar V */
+export function gestureSupport(look: HeyGenLook | null): { supported: boolean; engine?: "avatar_v" } {
+  if (!look) return { supported: false };
+  if (look.type === "photo_avatar") return { supported: true };
+  if (look.engines.includes("avatar_v")) return { supported: true, engine: "avatar_v" };
+  return { supported: false };
 }
 
 export interface AvatarSettings {
@@ -37,6 +59,8 @@ export interface AvatarSettings {
   outfit: OutfitId;
   /** key: `${presenter}:${outfit}` */
   photos: Record<string, AvatarImage>;
+  /** Selected HeyGen look (HeyGen engine) */
+  heygen: HeyGenLook | null;
   enabled: boolean;
   position: AvatarPosition;
   size: AvatarSize;
@@ -51,35 +75,36 @@ export const currentPhoto = (a: AvatarSettings): AvatarImage | undefined => a.ph
 
 export type VoicePreset = "pro-male" | "pro-female" | "casual-male" | "casual-female";
 export type VoiceSpeed = "slow" | "normal" | "fast";
-export type VoiceTone = "warm" | "neutral" | "authoritative";
-/** did = photoreal lip-sync via D-ID; animated = free voice (Workers AI) + animated photo */
-export type VoiceEngine = "did" | "animated";
+export type GestureStyle = "presenter" | "teacher" | "anchor" | "casual";
+/** heygen = HeyGen avatar video (full body, gestures); animated = free voice (Workers AI) + animated photo */
+export type VoiceEngine = "heygen" | "animated";
 
 export interface VoiceSettings {
+  /** Free-voice preset (animated engine) */
   preset: VoicePreset;
   speed: VoiceSpeed;
-  tone: VoiceTone;
+  gesture: GestureStyle;
   engine: VoiceEngine;
+  /** HeyGen voice; id "" = the avatar's own default voice */
+  heygenVoice: { id: string; name: string } | null;
 }
 
-export const VOICE_PRESETS: Record<VoicePreset, { label: string; did: string; aura: string }> = {
-  "pro-male": { label: "Professional male (Victor)", did: "en-US-GuyNeural", aura: "orion" },
-  "pro-female": { label: "Professional female (ARIA)", did: "en-US-AriaNeural", aura: "athena" },
-  "casual-male": { label: "Casual male", did: "en-US-DavisNeural", aura: "arcas" },
-  "casual-female": { label: "Casual female", did: "en-US-JennyNeural", aura: "luna" }
+export const VOICE_PRESETS: Record<VoicePreset, { label: string; aura: string }> = {
+  "pro-male": { label: "Professional male (Victor)", aura: "orion" },
+  "pro-female": { label: "Professional female (ARIA)", aura: "athena" },
+  "casual-male": { label: "Casual male", aura: "arcas" },
+  "casual-female": { label: "Casual female", aura: "luna" }
 };
 
-/** Microsoft speaking style per tone (D-ID only; the free voice has no tone control) */
-const TONE_STYLES: Record<VoiceTone, Record<string, string>> = {
-  warm: { "en-US-GuyNeural": "friendly", "en-US-AriaNeural": "friendly", "en-US-DavisNeural": "friendly", "en-US-JennyNeural": "friendly" },
-  neutral: {},
-  authoritative: { "en-US-GuyNeural": "newscast", "en-US-AriaNeural": "newscast-formal", "en-US-JennyNeural": "newscast" }
-};
+/** Default HeyGen voice: "Victor", English, professional male */
+export const DEFAULT_HEYGEN_VOICE = { id: "dbb793080e5b4733bf2cba6a66a4909d", name: "Victor" };
 
-export function didVoice(v: VoiceSettings): { voice_id: string; style?: string } {
-  const voice_id = VOICE_PRESETS[v.preset].did;
-  return { voice_id, style: TONE_STYLES[v.tone][voice_id] };
-}
+export const GESTURE_STYLES: Record<GestureStyle, { label: string; detail: string }> = {
+  presenter: { label: "Presenter", detail: "Pointing, purposeful gestures" },
+  teacher: { label: "Teacher", detail: "Steps, demonstrates with hands" },
+  anchor: { label: "Anchor", detail: "Composed and formal" },
+  casual: { label: "Casual", detail: "Relaxed, conversational" }
+};
 
 export const SPEED_RATE: Record<VoiceSpeed, number> = { slow: 0.85, normal: 1, fast: 1.15 };
 
@@ -146,12 +171,26 @@ export const DEFAULT_TARGET: TargetRect = { x: 0.35, y: 0.3, w: 0.3, h: 0.3 };
 
 // ---------- Avatar clips ----------
 
-export type ClipStatus = "queued" | "generating" | "done" | "error";
+export type ClipStatus = "queued" | "generating" | "done" | "error" | "cancelled";
 export interface AvatarClip {
   key: string;
   status: ClipStatus;
-  /** video = D-ID talking head; audio = free voice driving the animated photo */
+  /** Renderer that made (or is making) it, and its job id — never a credential */
+  provider?: string;
+  jobId?: string;
+  /** 0..1 while rendering, when the renderer reports it */
+  progress?: number | null;
+  startedAt?: number;
+  /** How many times this line has been rendered successfully (1 = first render) */
+  version?: number;
+  /** Sanitized provider diagnostics for a failed render (HTTP status, provider code/message, job ids) */
+  errorDetail?: { provider?: string; endpoint?: string; http?: number; code?: string; message?: string; kind?: string; jobId?: string; requestId?: string; providerJobId?: string };
+  /** video = HeyGen avatar; audio = free voice driving the animated photo */
   kind?: "video" | "audio";
+  /** HeyGen clip rendered with a transparent background (WebM with alpha) */
+  alpha?: boolean;
+  /** Gesture prompt this clip was rendered with (HeyGen), to flag out-of-date gestures */
+  motion?: string;
   url?: string;
   blob?: Blob;
   /** Natural length at 1× speed */
@@ -170,11 +209,9 @@ function hash(s: string): string {
 /** Cache key for one voiceover line's clip (speed isn't part of it — it's applied at playback) */
 export function sceneClipKey(avatar: AvatarSettings, voice: VoiceSettings, spoken: string): string | null {
   if (!spoken) return null;
-  if (voice.engine === "did") {
-    const photo = currentPhoto(avatar);
-    if (!photo) return null;
-    const v = didVoice(voice);
-    return `d-${hash(`${photo.mediaId}|${v.voice_id}|${v.style ?? ""}|${spoken}`)}`;
+  if (voice.engine === "heygen") {
+    if (!avatar.heygen) return null;
+    return `h-${hash(`${avatar.heygen.id}|${voice.heygenVoice?.id || "default"}|${spoken}`)}`;
   }
   return `a-${hash(`${VOICE_PRESETS[voice.preset].aura}|${spoken}`)}`;
 }
@@ -188,6 +225,47 @@ export function speechDuration(
   return Math.max(0.5, scene.duration ? Math.min(scene.duration, estimate) : estimate);
 }
 
+/** One voiceover line on the program's speaking track */
+export interface SpeechSlot {
+  sceneIndex: number;
+  key: string | null;
+  clip?: AvatarClip;
+  /** Where the script puts it */
+  scripted: number;
+  /** Where it actually plays: a rendered line is never cut, so a long one pushes the next back */
+  start: number;
+  length: number;
+  end: number;
+}
+
+let scheduleCache: { parse: ParseResult; clips: Record<string, AvatarClip>; avatar: AvatarSettings; voice: VoiceSettings; slots: SpeechSlot[] } | null = null;
+
+/**
+ * The speaking track. Rendered audio is the authority on length: when a line
+ * runs past the next line's timestamp, the next line starts when it ends
+ * instead of cutting either one off. The Avatar page flags those lines.
+ */
+export function speechSchedule(parse: ParseResult | null, project: Pick<Project, "avatar" | "voice">, clips: Record<string, AvatarClip>): SpeechSlot[] {
+  if (!parse) return [];
+  const { avatar, voice } = project;
+  const c = scheduleCache;
+  if (c && c.parse === parse && c.clips === clips && c.avatar === avatar && c.voice === voice) return c.slots;
+  const rate = SPEED_RATE[voice.speed];
+  const slots: SpeechSlot[] = [];
+  let prevEnd = -Infinity;
+  for (const scene of parse.scenes) {
+    if (!scene.spoken || scene.start === null) continue;
+    const key = sceneClipKey(avatar, voice, scene.spoken);
+    const clip = key ? clips[key] : undefined;
+    const length = speechDuration(scene, clip, rate);
+    const start = Math.max(scene.start, prevEnd);
+    slots.push({ sceneIndex: scene.index, key, clip, scripted: scene.start, start, length, end: start + length });
+    prevEnd = start + length;
+  }
+  scheduleCache = { parse, clips, avatar, voice, slots };
+  return slots;
+}
+
 // ---------- Program ----------
 
 /** Program timeline = optional intro card + main video + optional outro card */
@@ -199,8 +277,20 @@ export function programTiming(branding: Branding, mainDuration: number): Program
   return { intro, main: mainDuration, outro, total: intro + mainDuration + outro };
 }
 
+/** How avatar scenes are rendered (see /api/avatar/providers) */
+export type RenderQuality = "preview" | "standard" | "high";
+export type BackgroundMode = "transparent" | "provider";
+export interface AvatarRenderSettings {
+  /** "auto" = the server's highest-priority renderer */
+  provider: string;
+  quality: RenderQuality;
+  background: BackgroundMode;
+}
+
 export interface Project {
-  version: 2;
+  version: 3;
+  /** Stable id for generation history */
+  id: string;
   name: string;
   script: string;
   avatarName: string;
@@ -217,6 +307,7 @@ export interface Project {
   effectStyles: Record<string, EffectStyle>;
   /** language → source line → translation */
   translations: Record<string, Record<string, string>>;
+  avatarRender: AvatarRenderSettings;
 }
 
 /** Everything the renderer and player need for one frame */
@@ -243,7 +334,8 @@ TITLE: 60-Day Free Pilot`;
 
 export function defaultProject(): Project {
   return {
-    version: 2,
+    version: 3,
+    id: newProjectId(),
     name: "Untitled production",
     script: DEFAULT_SCRIPT,
     avatarName: "Victor",
@@ -252,13 +344,14 @@ export function defaultProject(): Project {
       presenter: "professional",
       outfit: "formal",
       photos: {},
+      heygen: null,
       enabled: true,
-      position: "corner-left",
+      position: "left",
       size: "medium",
       label: "Victor · DirectorAI™",
       labelColor: "#c9a84c"
     },
-    voice: { preset: "pro-male", speed: "normal", tone: "authoritative", engine: "did" },
+    voice: { preset: "pro-male", speed: "normal", gesture: "presenter", engine: "heygen", heygenVoice: DEFAULT_HEYGEN_VOICE },
     branding: {
       primary: "#1a2744",
       accent: "#c9a84c",
@@ -277,9 +370,12 @@ export function defaultProject(): Project {
     broll: [],
     targets: {},
     effectStyles: {},
-    translations: {}
+    translations: {},
+    avatarRender: { provider: "auto", quality: "standard", background: "transparent" }
   };
 }
+
+const newProjectId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** Length of the main timeline: trimmed base video at its speed, or the typed duration */
 export function mainDuration(p: Project): number {
@@ -293,10 +389,28 @@ export function mainDuration(p: Project): number {
 /** Deep-merge a saved project over the defaults so new fields always exist */
 export function hydrateProject(saved: unknown): Project {
   const d = defaultProject();
-  if (!saved || typeof saved !== "object" || (saved as Project).version !== 2) return d;
+  if (!saved || typeof saved !== "object") return d;
+  const version = (saved as { version?: number }).version;
+  if (version !== 2 && version !== 3) return d;
   const s = saved as Partial<Project>;
+  if (version === 2) {
+    // v2 used D-ID and different positions; keep everything else
+    const oldPos = (s.avatar as { position?: string } | undefined)?.position;
+    const pos: AvatarPosition = oldPos === "corner-left" ? "left" : oldPos === "full" ? "full" : "right";
+    s.avatar = { ...d.avatar, ...s.avatar, position: pos, heygen: null };
+    const oldEngine = (s.voice as { engine?: string } | undefined)?.engine;
+    s.voice = { ...d.voice, ...s.voice, engine: oldEngine === "animated" ? "animated" : "heygen", gesture: "presenter", heygenVoice: null };
+  }
+  // No voice chosen yet → Victor; looks saved before categories existed get one from their type
+  if (s.voice && !s.voice.heygenVoice) s.voice = { ...s.voice, heygenVoice: DEFAULT_HEYGEN_VOICE };
+  if (s.avatar?.heygen && !s.avatar.heygen.category) {
+    const t = s.avatar.heygen.type;
+    s.avatar = { ...s.avatar, heygen: { ...s.avatar.heygen, category: t === "photo_avatar" ? "talking_head" : t === "digital_twin" ? "digital_twin" : "studio" } };
+  }
   return {
-    ...d, ...s,
+    ...d, ...s, version: 3,
+    id: typeof s.id === "string" && s.id ? s.id : d.id,
+    avatarRender: { ...d.avatarRender, ...s.avatarRender },
     avatar: { ...d.avatar, ...s.avatar },
     voice: { ...d.voice, ...s.voice },
     branding: {

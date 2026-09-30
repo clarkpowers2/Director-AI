@@ -9,7 +9,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env, next }) => {
     return json({ error: "Server not configured: APP_ACCESS_CODE secret is missing." }, 503);
   }
   const code = request.headers.get("X-DirectorAI-Code") ?? "";
-  if (!safeEqual(code, env.APP_ACCESS_CODE)) {
+  // DIAG_ACCESS_CODE: optional, temporary second code for developer diagnostics — delete the secret when done
+  const diag = !!env.DIAG_ACCESS_CODE && env.DIAG_ACCESS_CODE.length >= 24 && safeEqual(code, env.DIAG_ACCESS_CODE);
+  if (!safeEqual(code, env.APP_ACCESS_CODE) && !diag) {
     return json({ error: "Enter your studio access code in Settings (gear icon, top right)." }, 401);
   }
   return next();

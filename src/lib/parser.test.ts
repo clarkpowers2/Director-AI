@@ -14,7 +14,23 @@ ZOOM: Haven logo. HIGHLIGHT: gold border.
 "Most hotels lose this at shift change. Not Haven."
 TRANSITION: fade to issues view`;
 
-const checks: [string, () => void][] = [
+const BLOCK_SCRIPT = `[0:10]
+
+VOICEOVER:
+"Hotels already collect enormous amounts of information."
+
+AVATAR:
+Victor gestures toward the screen.
+
+[0:25]
+VOICEOVER: "Right here are three open promises."
+AVATAR:
+Victor points.
+HIGHLIGHT:
+Promises tile.
+PULSE:`;
+
+const checks: [string, () => void | Promise<void>][] = [
   ["timestamped lines keep spoken text", () => {
     const r = parseScript("[0:05] Welcome to the demo");
     assert.match(r.voiceover_script, /\[0:05\] Welcome to the demo/);
@@ -72,6 +88,23 @@ const checks: [string, () => void][] = [
     assert.deepEqual(r.scenes[1].lines, [3]);
     assert.equal(r.scenes[1].spokenLine, null);
   }],
+  ["VOICEOVER: / AVATAR: blocks — stage directions are never spoken", () => {
+    const r = parseScript(BLOCK_SCRIPT, "Victor", 60);
+    assert.deepEqual(r.scenes.map(s => s.spoken), ["Hotels already collect enormous amounts of information.", "", "Right here are three open promises.", "", ""]);
+    assert.deepEqual(r.scenes.flatMap(s => s.directions.map(d => d.display)),
+      ["AVATAR: Victor gestures toward the screen", "AVATAR: Victor points", "HIGHLIGHT: Promises tile"]);
+    assert.equal(r.scenes[0].start, 10);
+    assert.doesNotMatch(r.voiceover_script, /VOICEOVER:|gestures/);
+  }],
+  ["matches the Worker parser's text output", async () => {
+    const workerParser = "../../../directorai-plugin/src/parser.js"; // plain JS in the sibling Worker repo
+    const worker = (await import(workerParser).catch(() => null)) as { parseScript: typeof parseScript } | null;
+    if (!worker) return; // Worker repo not checked out next to this one
+    for (const script of [README_SCRIPT, BLOCK_SCRIPT]) {
+      const a = parseScript(script, "Victor", 60), b = worker.parseScript(script, "Victor", 60);
+      for (const k of ["voiceover_script", "scene_directions", "summary"] as const) assert.equal(a[k], b[k], k);
+    }
+  }],
   ["direction ids are stable and unique", () => {
     const r = parseScript(README_SCRIPT, "Victor", 60);
     const ids = r.scenes.flatMap(s => s.directions.map(d => d.id));
@@ -82,7 +115,7 @@ const checks: [string, () => void][] = [
 let failed = 0;
 for (const [name, fn] of checks) {
   try {
-    fn();
+    await fn();
     console.log(`✓ ${name}`);
   } catch (err) {
     failed++;
