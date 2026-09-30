@@ -7,8 +7,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { json, type Env } from "../../server/shared";
+import { claude, MODEL, SCRIPT_SYNTAX } from "../../server/ai";
 
-const MODEL = "claude-sonnet-4-6";
 
 const Edits = z.object({
   reply: z.string().describe("One or two friendly sentences telling the user what you changed, or answering their question."),
@@ -50,11 +50,7 @@ const Edits = z.object({
 
 const SYSTEM = `You are the built-in assistant of DirectorAI™ Studio, a video production app. The user describes what they want; you return edits to their project. Only change what they asked for — every field you don't need to change must be null (or an empty array for effects).
 
-Script syntax (one beat per line):
-- Timestamps at line start: [0:00], 0:15, 5s
-- Speech: plain sentences, or: Name does something and says: "Line."
-- Effects on their own line: ZOOM: element · HIGHLIGHT: element · PULSE: element · POINTS TO: element · CALLOUT: text · TITLE: text · CAPTION: text · LOWER THIRD: Name | Title · FADE: in/out · TRANSITION: fade|slide to ...
-- Other actions in [brackets], e.g. [GESTURE: wave]
+${SCRIPT_SYNTAX}
 
 Rules:
 - To reword, reorder, add or delete lines, return the complete updated script in "script" (keep everything else as it was).
@@ -71,7 +67,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (!prompt) return json({ error: "Type what you'd like to change." }, 400);
   if (prompt.length > 2000 || (body?.context?.length ?? 0) > 60_000) return json({ error: "That request is too long." }, 400);
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = claude(env);
   try {
     const response = await client.messages.parse({
       model: MODEL,

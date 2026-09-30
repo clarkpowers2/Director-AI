@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node src/lib/parser.test.ts",
+    "test": "node src/lib/parser.test.ts && node src/lib/plan.test.ts",
+    "test:plan": "node src/lib/plan.test.ts && node --loader ./tests/ts-resolve-loader.mjs tests/plan-endpoint.test.ts",
     "check": "tsc -b && node src/lib/parser.test.ts",
     "preview": "npm run build && wrangler pages dev dist",
     "deploy": "npm run build && wrangler pages deploy dist --project-name directorai-web",

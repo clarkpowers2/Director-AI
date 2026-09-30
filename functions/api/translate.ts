@@ -3,8 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { json, type Env } from "../../server/shared";
+import { claude, MODEL } from "../../server/ai";
 
-const MODEL = "claude-sonnet-4-6";
 
 export const LANGUAGES = [
   "Spanish", "French", "German", "Italian", "Portuguese", "Chinese (Simplified)", "Japanese", "Korean",
@@ -22,7 +22,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (lines.length === 0) return json({ error: "There are no captions to translate yet." }, 400);
   if (lines.length > 500 || lines.join("").length > 40_000) return json({ error: "That script is too long to translate at once." }, 400);
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = claude(env);
   try {
     const response = await client.messages.parse({
       model: MODEL,

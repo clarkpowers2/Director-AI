@@ -19,6 +19,7 @@ interface Props {
   duration: number;
   intro: number;
   onAssist: () => Promise<void>;
+  onScriptAction: (action: string, instruction?: string) => Promise<void>;
   assistBusy: boolean;
   canUndo: boolean;
   onUndo: () => void;
@@ -37,6 +38,7 @@ export default function ScriptSection(p: Props) {
   const [view, setView] = useState<"script" | "scenes">("script");
   const { finding, setFinding } = p;
   const [parsedFlash, setParsedFlash] = useState(false);
+  const [scriptAction, setScriptAction] = useState("write");
 
   return (
     <Section
@@ -51,6 +53,14 @@ export default function ScriptSection(p: Props) {
           <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => void p.onAssist()} disabled={p.assistBusy || !p.script.trim()} title="Claude rewrites rough notes into director's script syntax and fixes formatting">
             {p.assistBusy ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} AI Assist
           </button>
+          <select className="input !w-auto !py-1.5 text-xs" aria-label="Script assistant action" value={scriptAction} onChange={e => setScriptAction(e.target.value)}>
+            <option value="write">Write script</option><option value="improve">Improve</option><option value="shorten">Shorten</option><option value="expand">Expand</option><option value="tone">Change tone</option><option value="hook">Create hook</option><option value="cta">Create CTA</option><option value="avatar_directions">Add avatar directions</option><option value="visual_directions">Add visual directions</option><option value="broll_directions">Add B-roll directions</option><option value="split_scenes">Split into scenes</option>
+          </select>
+          <button className="btn btn-navy !py-1.5 text-xs" disabled={p.assistBusy || (scriptAction !== "write" && !p.script.trim())} onClick={() => {
+            const instruction = scriptAction === "tone" || scriptAction === "write" ? window.prompt(scriptAction === "tone" ? "What tone should the script use?" : "What should the script cover?") ?? "" : "";
+            if ((scriptAction === "tone" || scriptAction === "write") && !instruction.trim()) return;
+            void p.onScriptAction(scriptAction, instruction);
+          }}><Wand2 size={14}/> Apply</button>
           <button className="btn btn-navy !py-1.5 text-xs" onClick={() => {
             p.onParse();
             setParsedFlash(true);

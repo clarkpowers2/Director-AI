@@ -7,6 +7,8 @@ export interface Env {
   /** Local testing only: point HeyGen calls at a mock server */
   HEYGEN_API_BASE?: string;
   ANTHROPIC_API_KEY?: string;
+  /** Local testing only: point Claude calls at a mock server */
+  ANTHROPIC_API_BASE?: string;
   APP_ACCESS_CODE?: string;
   /** Avatar renderer priority, e.g. "heygen,mock" (default: heygen, then mock) */
   AVATAR_PROVIDERS?: string;

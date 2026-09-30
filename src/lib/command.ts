@@ -2,9 +2,9 @@
 import { formatSeconds, type ParseResult } from "./parser.ts";
 import { FONTS, type Project } from "./project.ts";
 
-export type PageId = "editor" | "effects" | "advanced" | "audio" | "avatar" | "export" | "media" | "start" | "create";
+export type PageId = "editor" | "effects" | "advanced" | "audio" | "avatar" | "export" | "media" | "start" | "create" | "plan-review";
 /** Pages outside the main tab bar */
-export const EXTRA_PAGES: PageId[] = ["start", "create", "media"];
+export const EXTRA_PAGES: PageId[] = ["start", "create", "media", "plan-review"];
 
 export interface CommandEdits {
   reply: string;

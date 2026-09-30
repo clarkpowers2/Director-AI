@@ -30,7 +30,12 @@ export function directionPhrase(target: TargetRect, position: AvatarPosition): s
   return dx > 0 ? `${vertical}off to their left (the viewer's right)` : `${vertical}off to their right (the viewer's left)`;
 }
 
+/** Production notes in brackets ([Scene: …], [Visual: …], [B-roll: …]) — for editors, never presenter body language */
+export const isProductionNote = (d: Pick<Direction, "type" | "text">) =>
+  d.type === "ACTION" && /^(scene|visual|b-?roll|note|music|sfx)\s*:/i.test(d.text);
+
 function cue(d: Direction, style: GestureStyle, where: string): string | null {
+  if (isProductionNote(d)) return null;
   const thing = d.text ? ` the ${d.text}` : "";
   const subtle = style === "anchor";
   switch (d.type) {

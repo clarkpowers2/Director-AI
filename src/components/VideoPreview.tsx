@@ -6,7 +6,6 @@ import type { TimedEffect } from "../lib/effects.ts";
 import { formatSeconds } from "../lib/parser.ts";
 import type { RenderState, TargetRect } from "../lib/project.ts";
 
-const W = 1280, H = 720;
 
 /** Re-renders ~20×/s while the clock moves, and whenever play/pause changes */
 export function usePlayerTime(player: Player): number {
@@ -51,7 +50,12 @@ export default function VideoPreview(p: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const t = usePlayerTime(p.player);
-  const total = p.getState().timing.total;
+  const state = p.getState();
+  const total = state.timing.total;
+  const format = state.project.format ?? "16:9";
+  const W = format === "16:9" ? 1280 : format === "9:16" ? 405 : 720;
+  const H = format === "16:9" ? 720 : 720;
+  const aspectRatio = format === "16:9" ? "16 / 9" : format === "9:16" ? "9 / 16" : "1 / 1";
 
   const live = useRef(p);
   live.current = p;
@@ -63,7 +67,11 @@ export default function VideoPreview(p: Props) {
     let raf = 0;
     const loop = () => {
       const { player, media, getState, effects, showTargets, placement, selectedId } = live.current;
-      renderFrame(ctx, W, H, player.t, getState(), media, effects, { editTargets: showTargets || !!placement, selectedDirectionId: selectedId });
+      const state = getState();
+      const shape = state.project.format ?? "16:9";
+      const w = shape === "16:9" ? 1280 : shape === "9:16" ? 405 : 720;
+      const h = 720;
+      renderFrame(ctx, w, h, player.t, state, media, effects, { editTargets: showTargets || !!placement, selectedDirectionId: selectedId });
       const d = draftRef.current;
       if (d) {
         ctx.save();
@@ -117,7 +125,8 @@ export default function VideoPreview(p: Props) {
           width={W}
           height={H}
           aria-label="Video preview"
-          className={`block aspect-video w-full ${p.placement ? "cursor-crosshair" : ""}`}
+          className={`block w-full ${p.placement ? "cursor-crosshair" : ""}`}
+          style={{ aspectRatio }}
           onPointerDown={e => {
             if (!p.placement) return;
             e.currentTarget.setPointerCapture(e.pointerId);

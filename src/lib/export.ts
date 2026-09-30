@@ -17,6 +17,14 @@ export const RESOLUTIONS: Record<Resolution, { w: number; h: number; label: stri
   "4k": { w: 3840, h: 2160, label: "4K UHD", avc: "avc1.640033", bitrate: 35_000_000, longBitrate: 14_000_000 }
 };
 
+/** Resolution labels use the frame height; retain the selected project's aspect ratio. */
+export function outputDimensions(res: Resolution, format: "16:9" | "9:16" | "1:1"): { w: number; h: number } {
+  const h = RESOLUTIONS[res].h;
+  if (format === "9:16") return { w: Math.round(h * 9 / 16), h };
+  if (format === "1:1") return { w: h, h };
+  return { w: RESOLUTIONS[res].w, h };
+}
+
 /** An export failure with a message that's safe to show as-is */
 export class ExportError extends Error {}
 
@@ -93,7 +101,7 @@ export interface ExportResult { blob: Blob; ext: string; note?: string }
 export async function exportVideo(
   state: RenderState, sources: ExportSources, res: Resolution, format: Format, cb: ExportCallbacks, signal?: AbortSignal
 ): Promise<ExportResult> {
-  const { w: W, h: H } = RESOLUTIONS[res];
+  const { w: W, h: H } = outputDimensions(res, state.project.format ?? "16:9");
   const long = state.timing.total > LONG_VIDEO_SECONDS;
   const bitrate = long ? RESOLUTIONS[res].longBitrate : RESOLUTIONS[res].bitrate;
   const { video: vset } = state.project;

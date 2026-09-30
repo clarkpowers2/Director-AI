@@ -5,28 +5,12 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { json, type Env } from "../../server/shared";
+import { aiFailure, claude, MODEL, SCRIPT_SYNTAX } from "../../server/ai";
 
-const MODEL = "claude-sonnet-4-6";
 
-const SYSTEM = `You convert rough video notes into a DirectorAI™ director's script for a screen-recording demo with an AI avatar presenter.
-
-Output ONLY the script — no preamble, no code fences, no commentary.
-
-Syntax (one beat per line):
-- Timestamps at the start of a line: [0:00], [0:15], [1:05]. Use them when the notes give timing; otherwise omit them.
-- Speech with a stage direction: <Name> <action> and says: "Spoken line."  (e.g. Victor points to the dashboard and says: "Here's your overview.")
-- Plain speech: just the sentence on its own line.
-- Effects on their own line, keyword first, then the on-screen element or text:
-  ZOOM: <element>   HIGHLIGHT: <element>   PULSE: <element>   POINTS TO: <element>
-  TITLE: <text>     CAPTION: <text>        FADE: in | out     TRANSITION: <description>
-- Effects can be chained on one line: ZOOM: Haven logo. HIGHLIGHT: gold border.
-- Other actions can go in square brackets: [Victor smiles]
-
-Rules:
-- Keep the presenter's spoken lines natural and concise (one or two sentences each).
-- Name on-screen elements exactly as the notes describe them.
-- Never put effect keywords in the middle of a spoken sentence.
-- Use the presenter name you are given.`;
+const SYSTEM = `You convert rough video notes into a DirectorAI™ Director's Script.
+${SCRIPT_SYNTAX}
+Output ONLY the script — no preamble, code fences or commentary. Use the presenter name given. Keep speech natural and concise, and preserve product and brand names exactly.`;
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (!env.ANTHROPIC_API_KEY) return json({ error: "AI Assist is not configured on the server (ANTHROPIC_API_KEY missing)." }, 503);
@@ -40,7 +24,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const duration = body?.video_duration_seconds;
   const context = `Presenter name: ${name}${duration ? `\nVideo length: ${Math.round(duration)} seconds` : ""}`;
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = claude(env);
   try {
     const response = await client.messages.create({
       model: MODEL,
@@ -61,10 +45,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     if (!script) return json({ error: "Claude returned an empty script. Try adding more detail to your notes." }, 502);
     return json({ script, truncated: response.stop_reason === "max_tokens" });
   } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) return json({ error: "The server's Anthropic API key is invalid." }, 502);
-    if (error instanceof Anthropic.RateLimitError) return json({ error: "AI Assist is busy — try again in a minute." }, 429);
-    if (error instanceof Anthropic.BadRequestError) return json({ error: `Claude rejected the request: ${error.message}` }, 400);
-    if (error instanceof Anthropic.APIError) return json({ error: `Claude API error (${error.status}).` }, 502);
-    return json({ error: "Could not reach Claude." }, 502);
+    return aiFailure(error, "AI Assist");
   }
 };

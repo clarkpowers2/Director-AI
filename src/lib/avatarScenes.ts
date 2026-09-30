@@ -5,7 +5,7 @@
  * the stage directions (those become the gesture).
  */
 import type { ParseResult } from "./parser.ts";
-import { lineDirections } from "./gestures.ts";
+import { isProductionNote, lineDirections } from "./gestures.ts";
 import {
   sceneClipKey, speechSchedule, SPEED_RATE,
   type AvatarClip, type AvatarPosition, type BackgroundMode, type Project
@@ -92,7 +92,7 @@ export function buildAvatarScenes(
     const actual = clip?.status === "done" && clip.duration ? clip.duration / rate : null;
     const directions = byLine.get(scene.index) ?? scene.directions;
     const gesture = directions
-      .filter(d => d.type === "AVATAR" || d.type === "GESTURE" || d.type === "ACTION" || d.type === "POINT")
+      .filter(d => (d.type === "AVATAR" || d.type === "GESTURE" || d.type === "ACTION" || d.type === "POINT") && !isProductionNote(d))
       .map(d => (d.type === "POINT" ? `points to ${d.text}` : d.text))
       .filter(Boolean)
       .join("; ");

@@ -9,6 +9,7 @@ import Timeline from "./components/Timeline.tsx";
 import { EmptyState, PageHeader } from "./components/ui.tsx";
 import { applyEdits, buildContext, EXTRA_PAGES, type CommandEdits, type PageId } from "./lib/command.ts";
 import StartScreen from "./components/StartScreen.tsx";
+import { Creator, PlanReview } from "./components/PlanWorkflow.tsx";
 import SettingsModal from "./components/SettingsModal.tsx";
 import ScriptSection from "./components/ScriptSection.tsx";
 import AvatarStudio from "./components/AvatarStudio.tsx";
@@ -44,6 +45,7 @@ import {
   type ProjectSummary
 } from "./lib/storage.ts";
 import { hydrateProject, newProjectId } from "./lib/project.ts";
+import { planToProject, type CreatorSettings, type ProductionPlan } from "./lib/plan.ts";
 
 /** First visit (nothing saved yet) opens the start screen */
 const initialProject = loadCurrentProject();
@@ -113,6 +115,9 @@ export default function App() {
   const [translating, setTranslating] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prompter, setPrompter] = useState(false);
+  const [creatorSettings, setCreatorSettings] = useState<CreatorSettings>({ prompt: "", duration: 60, format: "16:9", style: "Professional", presenter: null, usage: "DirectorAI decides", voice: "default" });
+  const [productionPlan, setProductionPlan] = useState<ProductionPlan | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
 
   const patch = useCallback((fn: (p: Project) => Partial<Project>) => setProject(p => ({ ...p, ...fn(p) })), []);
   const setScript = (script: string) => patch(() => ({ script }));
@@ -651,6 +656,48 @@ export default function App() {
     }
   };
 
+  const onScriptAction = async (action: string, instruction = "") => {
+    setAssistBusy(true);
+    try {
+      const res = await api<{ script: string; summary: string; truncated?: boolean }>("/api/script", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, instruction, script: project.script, presenter: project.avatarName, duration_seconds: main })
+      });
+      setUndoScript(project.script);
+      setScript(res.script);
+      setForceParse(n => n + 1);
+      setNotice({ text: res.summary + (res.truncated ? " The output may be incomplete." : ""), tone: "info" });
+    } catch (err) { fail(err instanceof Error ? err.message : "The Script Assistant failed. Try again."); }
+    finally { setAssistBusy(false); }
+  };
+
+  const generatePlan = async (settings: CreatorSettings) => {
+    setCreatorSettings(settings);
+    setPlanBusy(true);
+    try {
+      const result = await api<{ plan: ProductionPlan; truncated?: boolean }>("/api/plan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: settings.prompt, duration_seconds: settings.duration, format: settings.format,
+          style: settings.style, presenter: settings.presenter, avatar_usage: settings.usage,
+          voice: settings.voice === "default" ? project.voice.heygenVoice?.name ?? project.voice.preset : ({ "pro-male":"Professional male (Victor)", "pro-female":"Professional female (ARIA)", "casual-male":"Casual male", "casual-female":"Casual female" }[settings.voice] ?? settings.voice), has_video: !!project.base })
+      });
+      setProductionPlan(result.plan);
+      goPage("plan-review");
+      if (result.truncated) setNotice({ text: "The plan response was cut short. Review scene coverage before continuing.", tone: "info" });
+    } catch (err) { fail(err instanceof Error ? err.message : "Couldn't generate a production plan."); }
+    finally { setPlanBusy(false); }
+  };
+
+  const continuePlan = () => {
+    if (!productionPlan) return;
+    const base = blankProject("ai", productionPlan.title || "AI production");
+    const next = planToProject(productionPlan, creatorSettings, base);
+    next.avatar = { ...project.avatar, ...next.avatar, enabled: !!creatorSettings.presenter };
+    if (creatorSettings.voice === "default") next.voice = { ...project.voice };
+    switchProject(next, "editor");
+    setProductionPlan(null);
+  };
+
   const selectDirection = (d: Direction) => {
     setSelectedId(d.id);
     const scene = parse.scenes[d.sceneIndex];
@@ -858,6 +905,12 @@ export default function App() {
                 onDelete={deleteProject} />
             )}
 
+            {page === "create" && <Creator initial={creatorSettings} project={project} busy={planBusy}
+              onBack={() => goPage("start")} onGenerate={s => void generatePlan(s)} />}
+            {page === "plan-review" && productionPlan && <PlanReview plan={productionPlan} setPlan={setProductionPlan}
+              presenter={creatorSettings.presenter} busy={planBusy} onBack={() => goPage("create")}
+              onRegenerate={() => void generatePlan(creatorSettings)} onContinue={continuePlan} />}
+
             {page === "editor" && (
               <>
                 <ScriptSection
@@ -868,6 +921,7 @@ export default function App() {
                   duration={main}
                   intro={timing.intro}
                   onAssist={onAssist}
+                  onScriptAction={onScriptAction}
                   assistBusy={assistBusy}
                   canUndo={undoScript !== null}
                   onUndo={() => {

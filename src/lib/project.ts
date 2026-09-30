@@ -71,6 +71,72 @@ export interface AvatarSettings {
 export const photoKey = (a: Pick<AvatarSettings, "presenter" | "outfit">) => `${a.presenter}:${a.outfit}`;
 export const currentPhoto = (a: AvatarSettings): AvatarImage | undefined => a.photos[photoKey(a)];
 
+// ---------- Per-line avatar layout (composition — never re-renders the avatar) ----------
+
+export type AvatarPreset = "bottom-right" | "bottom-left" | "top-right" | "top-left" | "center" | "full" | "custom";
+export type AvatarMotion = "none" | "fade" | "slide" | "pop";
+
+/** Where and how one voiceover line's avatar clip appears. Changing it is free: no new render. */
+export interface AvatarLayout {
+  visible: boolean;
+  preset: AvatarPreset;
+  /** Center of the avatar box, 0..1 of the frame (custom / after dragging) */
+  x: number;
+  y: number;
+  /** Avatar width as a share of the frame width */
+  scale: number;
+  opacity: number;
+  entrance: AvatarMotion;
+  exit: AvatarMotion;
+  muted: boolean;
+  /** Seconds cut from the start / end of the rendered clip */
+  trimStart: number;
+  trimEnd: number;
+  /** Seconds moved later (+) or earlier (−) than the script's timestamp */
+  shift: number;
+}
+
+export const AVATAR_PRESETS: Record<Exclude<AvatarPreset, "custom">, { label: string; x: number; y: number; scale: number }> = {
+  "bottom-right": { label: "Bottom right", x: 0.84, y: 0.7, scale: 0.27 },
+  "bottom-left": { label: "Bottom left", x: 0.16, y: 0.7, scale: 0.27 },
+  "top-right": { label: "Top right", x: 0.84, y: 0.3, scale: 0.24 },
+  "top-left": { label: "Top left", x: 0.16, y: 0.3, scale: 0.24 },
+  center: { label: "Center", x: 0.5, y: 0.55, scale: 0.4 },
+  full: { label: "Full screen", x: 0.5, y: 0.5, scale: 1 }
+};
+
+export const DEFAULT_LAYOUT: AvatarLayout = {
+  visible: true, preset: "bottom-right", ...{ x: 0.84, y: 0.7, scale: 0.27 },
+  opacity: 1, entrance: "fade", exit: "fade", muted: false, trimStart: 0, trimEnd: 0, shift: 0
+};
+
+/** Layout key for a voiceover line — independent of avatar and voice, so layouts survive a look change */
+export const lineKey = (spoken: string) => `l-${hash(spoken.trim().replace(/\s+/g, " "))}`;
+
+/** A line's layout: its own override, else the project-wide placement */
+export function layoutFor(project: Pick<Project, "avatarLayouts" | "avatar">, spoken: string): AvatarLayout {
+  const own = project.avatarLayouts?.[lineKey(spoken)];
+  if (own) return { ...DEFAULT_LAYOUT, ...own };
+  return { ...DEFAULT_LAYOUT, ...globalPlacement(project.avatar), visible: project.avatar.enabled };
+}
+
+/** The older project-wide Position/Size settings, as a layout */
+export function globalPlacement(a: Pick<AvatarSettings, "position" | "size">): Pick<AvatarLayout, "preset" | "x" | "y" | "scale"> {
+  const scale = { small: 0.25, medium: 0.33, large: 0.5 }[a.size];
+  switch (a.position) {
+    case "full": return { preset: "full", ...AVATAR_PRESETS.full };
+    case "left": return { preset: "custom", x: scale / 2 + 0.02, y: 0.62, scale };
+    case "right":
+    case "corner": return { preset: "custom", x: 1 - scale / 2 - 0.02, y: 0.62, scale };
+    default: return { preset: "custom", x: 0.5, y: 0.62, scale };
+  }
+}
+
+export function presetLayout(preset: Exclude<AvatarPreset, "custom">, scale?: number): Pick<AvatarLayout, "preset" | "x" | "y" | "scale"> {
+  const p = AVATAR_PRESETS[preset];
+  return { preset, x: p.x, y: p.y, scale: preset === "full" ? 1 : scale ?? p.scale };
+}
+
 // ---------- Voice ----------
 
 export type VoicePreset = "pro-male" | "pro-female" | "casual-male" | "casual-female";
@@ -310,6 +376,12 @@ export interface Project {
   /** language → source line → translation */
   translations: Record<string, Record<string, string>>;
   avatarRender: AvatarRenderSettings;
+  /** lineKey(spoken) → that line's avatar layout override */
+  avatarLayouts: Record<string, Partial<AvatarLayout>>;
+  /** Output shape */
+  format: "16:9" | "9:16" | "1:1";
+  /** The AI production plan this project came from, kept for reference */
+  plan?: unknown;
 }
 
 /** Everything the renderer and player need for one frame */
@@ -373,7 +445,9 @@ export function defaultProject(): Project {
     targets: {},
     effectStyles: {},
     translations: {},
-    avatarRender: { provider: "auto", quality: "standard", background: "transparent" }
+    avatarRender: { provider: "auto", quality: "standard", background: "transparent" },
+    avatarLayouts: {},
+    format: "16:9"
   };
 }
 
