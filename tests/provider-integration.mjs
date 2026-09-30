@@ -212,13 +212,6 @@ check("mock provider can't be selected when not enabled", async () => {
   assert.equal(r.status, 400);
   assert.equal((await api("/api/avatar/providers")).body.providers.map(p => p.id).join(), "heygen");
 });
-check("diagnostics: read-only, no credential", async () => {
-  const before = calls.filter(c => c.method === "POST").length;
-  const r = await api("/api/avatar/diagnostics");
-  assert.equal(r.body.credentialConfigured, true);
-  assert.equal(r.body.autoSelects, "heygen");
-  assert.equal(calls.filter(c => c.method === "POST").length, before, "diagnostics must not create renders");
-});
 check("server logs never contain the credential", async () => {
   await new Promise(r => setTimeout(r, 500));
   assert.ok(logs.includes("provider_error"), "diagnostic lines are logged");

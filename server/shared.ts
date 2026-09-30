@@ -10,8 +10,6 @@ export interface Env {
   APP_ACCESS_CODE?: string;
   /** Avatar renderer priority, e.g. "heygen,mock" (default: heygen, then mock) */
   AVATAR_PROVIDERS?: string;
-  /** Temporary second access code for developer diagnostics (unset when not debugging) */
-  DIAG_ACCESS_CODE?: string;
   /** "1" enables the mock renderer (local testing) */
   AVATAR_MOCK?: string;
 }
