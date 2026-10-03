@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertCircle, Briefcase, Cpu, Hand, KeyRound, Loader2, Newspaper, RefreshCw, Search, Sparkles, Upload, UserRound, Video
+  AlertCircle, Briefcase, Cpu, Hand, Loader2, Newspaper, RefreshCw, Search, Sparkles, Upload, UserRound, Video
 } from "lucide-react";
 import { Card, Field, FieldGroup, Section, Seg, Toggle, useDebounced } from "./ui.tsx";
 import {
@@ -9,7 +9,7 @@ import {
   type OutfitId, type PresenterId, type VoiceSettings
 } from "../lib/project.ts";
 import type { ParseResult } from "../lib/parser.ts";
-import { ApiError, createPhotoAvatar, fetchLooks, getAccessCode, searchLooks, setAccessCode, type ServerStatus } from "../lib/avatar.ts";
+import { ApiError, createPhotoAvatar, fetchLooks, searchLooks, type ServerStatus } from "../lib/avatar.ts";
 
 const PRESENTER_ICON: Record<PresenterId, React.ReactNode> = {
   professional: <Briefcase size={28} />, creator: <Video size={28} />, anchor: <Newspaper size={28} />,
@@ -147,33 +147,7 @@ export default function AvatarStudio(p: Props) {
       </div>
 
       {p.extras}
-
-      <AccessCodeCard server={p.server} onSaved={p.onAccessCodeSaved} />
     </div>
-  );
-}
-
-function AccessCodeCard({ server, onSaved }: { server: ServerStatus | null; onSaved: () => void }) {
-  const [code, setCode] = useState(getAccessCode());
-  const [saved, setSaved] = useState(false);
-  return (
-    <Section id="avatar-settings" icon={<KeyRound size={18} />} title="Settings" subtitle="Studio access code — needed for avatars, AI Assist and translation">
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <input className="input" type="password" value={code} onChange={e => {
-          setCode(e.target.value);
-          setSaved(false);
-        }} placeholder="Studio access code" aria-label="Studio access code" />
-        <button className="btn btn-gold shrink-0" onClick={() => {
-          setAccessCode(code.trim());
-          setSaved(true);
-          onSaved();
-        }}>{saved ? "Saved ✓" : "Save code"}</button>
-      </div>
-      <p className="mt-2 text-xs text-white/45">
-        Stored only in this browser.
-        {server ? ` Server: avatar renderer ${server.avatar ? "connected" : "not set up"} · free voice ${server.tts ? "on" : "off"} · AI ${server.anthropic ? "connected" : "not set up"}.` : " Can't reach the server right now."}
-      </p>
-    </Section>
   );
 }
 
