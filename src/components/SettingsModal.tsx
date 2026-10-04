@@ -1,13 +1,11 @@
-import { useState } from "react";
-import { CheckCircle2, KeyRound, RotateCcw, XCircle } from "lucide-react";
+import { CheckCircle2, RotateCcw, XCircle } from "lucide-react";
 import { Modal } from "./ui.tsx";
-import { getAccessCode, setAccessCode, type ServerStatus } from "../lib/avatar.ts";
+import { type ServerStatus } from "../lib/avatar.ts";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   server: ServerStatus | null;
-  onAccessCodeSaved: () => void;
   onReset: () => void;
 }
 
@@ -20,23 +18,10 @@ function Row({ ok, label }: { ok: boolean | undefined; label: string }) {
   );
 }
 
-export default function SettingsModal({ open, onClose, server, onAccessCodeSaved, onReset }: Props) {
-  const [code, setCode] = useState(getAccessCode());
+export default function SettingsModal({ open, onClose, server, onReset }: Props) {
   return (
     <Modal open={open} onClose={onClose} title="Settings">
       <div className="space-y-5">
-        <div>
-          <span className="field-label flex items-center gap-1.5"><KeyRound size={12} /> Studio access code</span>
-          <div className="flex gap-2">
-            <input className="input" type="password" value={code} onChange={e => setCode(e.target.value)} placeholder="Needed for avatar voices and AI features" />
-            <button className="btn btn-gold" onClick={() => {
-              setAccessCode(code.trim());
-              onAccessCodeSaved();
-            }}>Save</button>
-          </div>
-          <p className="mt-1.5 text-[11px] text-white/40">Stored only in this browser. Script parsing, effects and export work without it.</p>
-        </div>
-
         <div>
           <span className="field-label">Server features</span>
           {server === null ? (

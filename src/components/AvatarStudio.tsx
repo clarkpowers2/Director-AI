@@ -45,14 +45,13 @@ interface Props {
   staleCount: number;
   generating: { done: number; total: number } | null;
   onCancel: () => void;
-  onAccessCodeSaved: () => void;
   /** Avatar generation queue (replaces the old line list) */
   queue: React.ReactNode;
   /** Test render and generation history */
   extras: React.ReactNode;
 }
 
-/** The Avatar page: engine, gallery, big preview + generate, placement, gestures, lines, access code */
+/** The Avatar page: engine, gallery, big preview + generate, placement, gestures and lines */
 export default function AvatarStudio(p: Props) {
   const { avatar, voice } = p;
   const spoken = p.parse.scenes.filter(s => s.spoken);

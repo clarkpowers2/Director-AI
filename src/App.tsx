@@ -1037,11 +1037,7 @@ export default function App() {
                       onGenerate={runTest} onCancel={() => testAbort.current?.abort()} />
                     <GenerationHistory records={history} providers={providers} />
                   </div>
-                ) : <GenerationHistory records={history} providers={providers} />}
-                onAccessCodeSaved={() => {
-                  refreshServer();
-                  setNotice({ text: "Access code saved.", tone: "info" });
-                }} />
+                ) : <GenerationHistory records={history} providers={providers} />} />
             )}
 
             {page === "export" && (
@@ -1077,10 +1073,7 @@ export default function App() {
           setForceParse(n => n + 1);
           setAiMessages(m => [...m, { role: "assistant", text: "Undone — the project is back to how it was before that change." }]);
         }} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} server={server} onAccessCodeSaved={() => {
-        refreshServer();
-        setNotice({ text: "Access code saved.", tone: "info" });
-      }} onReset={resetProject} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} server={server} onReset={resetProject} />
       <RenderAvatarPanel open={!!renderPanel} onClose={() => setRenderPanel(null)} scenes={queueScenes} preselect={renderPanel?.keys ?? null}
         rendered={project.voice.engine === "heygen"} avatarName={project.voice.engine === "heygen" ? project.avatar.heygen?.name ?? null : "Presenter photo"}
         avatarImage={project.voice.engine === "heygen" ? project.avatar.heygen?.image ?? null : photo?.thumbnail ?? null}

@@ -55,7 +55,7 @@ export class ApiError extends Error {
 /** Plain-English fallback messages — the server already words its own errors */
 function fallbackMessage(status: number): string {
   if (status === 0) return "You're offline. Parsing still works; avatar voices and AI features need a connection.";
-  if (status === 401) return "Enter your studio access code in Settings to use avatar and AI features.";
+  if (status === 401) return "This browser isn't authorized to use avatar and AI features.";
   if (status === 413) return "That file is too large.";
   if (status === 429) return "Too many requests right now. Try again in a minute.";
   if (status === 503) return "This feature isn't set up on the server yet.";
